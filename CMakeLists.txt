@@ -88,28 +88,6 @@ endif()
 set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
 
-################################ ITT module interface ################################
-
-set(VTune_DIR "" CACHE PATH "Where to look for VTune installation")
-find_path(ITT_NOTIFY_INCLUDE_DIR "ittnotify.h" HINTS ${VTune_DIR}/include)
-
-add_library(ITTNotifySupport INTERFACE)
-target_sources(ITTNotifySupport INTERFACE ${PROJECT_SOURCE_DIR}/ITT/ITTNotifySupport.hpp)
-target_include_directories(ITTNotifySupport INTERFACE ${PROJECT_SOURCE_DIR}/ITT/)
-if(ITT_NOTIFY_INCLUDE_DIR)
-  message(VERBOSE "found itt notify header in ${ITT_NOTIFY_INCLUDE_DIR}")
-  target_include_directories(ITTNotifySupport SYSTEM INTERFACE ${ITT_NOTIFY_INCLUDE_DIR})
-  target_link_libraries(ITTNotifySupport INTERFACE ${ITT_NOTIFY_INCLUDE_DIR}/../lib64/libittnotify${CMAKE_STATIC_LIBRARY_SUFFIX})
-  if(NOT WIN32)
-    target_link_libraries(ITTNotifySupport dl)
-  endif(NOT WIN32)
-  if ((NOT CMAKE_BUILD_TYPE STREQUAL "Release") AND (NOT ENABLE_PARALLELISATION))
-    target_compile_options(ITTNotifySupport INTERFACE -DWITH_ITT_NOTIFY)
-  else()
-    target_compile_options(ITTNotifySupport INTERFACE -DNO_ITT_NOTIFY)
-  endif()
-endif(ITT_NOTIFY_INCLUDE_DIR)
-
 #################################### BOSSArrowStorage Plugin ####################################
 
 if(MSVC)
@@ -126,8 +104,7 @@ target_compile_options(BOSSArrowStorage PUBLIC -DARROW_STATIC)
 if(WIN32)
     target_compile_options(BOSSArrowStorage PUBLIC /bigobj)
 endif(WIN32)
-	
-target_link_libraries(BOSSArrowStorage ITTNotifySupport)
+
 target_link_libraries(BOSSArrowStorage Threads::Threads)
 set_target_properties(BOSSArrowStorage PROPERTIES POSITION_INDEPENDENT_CODE ON)
 set_target_properties(BOSSArrowStorage PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
