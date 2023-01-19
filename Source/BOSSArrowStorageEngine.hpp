@@ -1,11 +1,9 @@
 #pragma once
 
 #include <BOSS.hpp>
-#include <Engine.hpp>
 #include <Expression.hpp>
-#include <ExpressionUtilities.hpp>
-#include <Utilities.hpp>
-using boss::utilities::operator""_;
+
+#include <unordered_map>
 
 #ifdef _WIN32
 extern "C" {
@@ -16,7 +14,7 @@ __declspec(dllexport) void reset();
 
 namespace boss::engines::arrow_storage {
 
-class Engine : public boss::Engine {
+class Engine {
 public:
   Engine(Engine&) = delete;
   Engine& operator=(Engine&) = delete;
@@ -25,7 +23,15 @@ public:
   Engine() = default;
   ~Engine() = default;
 
-  boss::Expression evaluate(boss::Expression const& expr);
+  boss::Expression evaluate(boss::Expression&& expr);
+
+private:
+  bool memoryMapped = true;
+  std::unordered_map<std::string, boss::ComplexExpression> tables;
+
+  bool load(Symbol const& tableSymbol, std::string const& filepath);
+  bool load(Symbol const& tableSymbol, std::string const& filepath, char separator,
+            bool eolHasSeparator, bool hasHeader, unsigned long long maxRows = -1);
 };
 
 } // namespace boss::engines::arrow_storage
