@@ -83,12 +83,19 @@ ExternalProject_Add(BOSS
   )
 endif()
 
+ExternalProject_Add(catch2
+	URL https://github.com/catchorg/Catch2/archive/v2.13.6.tar.gz
+  DOWNLOAD_DIR $ENV{HOME}/.cmake-downloads/${CMAKE_PROJECT_NAME}
+	CMAKE_ARGS -DCMAKE_INSTALL_PREFIX=${BOSSArrowStorage_BINARY_DIR}/deps -DCATCH_BUILD_TESTING=NO -DBUILD_TESTING=NO -DCATCH_ENABLE_WERROR=NO -DCATCH_INSTALL_DOCS=NO
+               -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}  -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER} -DCMAKE_CXX_FLAGS=${CMAKE_CXX_FLAGS}
+  )
+
 ####################### Other Options and Library Dependencies #######################
 
 set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
 
-#################################### BOSSArrowStorage Plugin ####################################
+#################################### Targets ####################################
 
 if(MSVC)
   # not making any difference on Windows
@@ -98,27 +105,48 @@ else()
   set(LibraryType MODULE)
 endif(MSVC)
 
-add_library(BOSSArrowStorage ${LibraryType} "Source/BOSSArrowStorageEngine.cpp")
-add_dependencies(BOSSArrowStorage BOSS)
-target_compile_options(BOSSArrowStorage PUBLIC -DARROW_STATIC)
-if(WIN32)
-    target_compile_options(BOSSArrowStorage PUBLIC /bigobj)
-endif(WIN32)
+set(ImplementationFiles Source/BOSSArrowStorageEngine.cpp)
+set(TestFiles Tests/BOSSArrowStorageTests.cpp)
 
-target_link_libraries(BOSSArrowStorage Threads::Threads)
-set_target_properties(BOSSArrowStorage PROPERTIES POSITION_INDEPENDENT_CODE ON)
-set_target_properties(BOSSArrowStorage PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
-if(MSVC)
-    target_compile_options(BOSSArrowStorage PUBLIC "/Zc:__cplusplus")
-    target_compile_options(BOSSArrowStorage PUBLIC "/EHsc")
-    # to link against all needed symbols for loading BOSSArrowStorage as a plugin
-    target_link_libraries(BOSSArrowStorage ${BOSSArrowStorage_BINARY_DIR}/deps/lib/BOSS.lib)
-    target_link_libraries(BOSSArrowStorage ${BOSSArrowStorage_BINARY_DIR}/deps/lib/Tests.lib)
-endif()
-target_include_directories(BOSSArrowStorage SYSTEM PUBLIC ${BOSSArrowStorage_BINARY_DIR}/deps/include)
-if(UNIX AND NOT APPLE)
-    target_link_libraries(BOSSArrowStorage rt)
-endif()
+# Plugin
+add_library(BOSSArrowStorage ${LibraryType} ${ImplementationFiles})
+
+# Tests
+add_executable(BOSSArrowStorageTests ${ImplementationFiles} ${TestFiles})
+add_dependencies(BOSSArrowStorageTests catch2)
+if(NOT MSVC)
+    # for now, need linking with BOSS to successfully compile the tests with the Arrow symbols required by the engine
+    # ideally, we would like to plug additional tests to BOSS tests
+    target_link_libraries(BOSSArrowStorageTests ${BOSSArrowStorage_BINARY_DIR}/deps/lib/${CMAKE_SHARED_LIBRARY_PREFIX}BOSS${CMAKE_SHARED_LIBRARY_SUFFIX})
+else()
+    # similarly for windows, we need to make sure to get the BOSS.dll in the right folder for the tests executable
+    add_custom_command(TARGET BOSSArrowStorageTests POST_BUILD
+      COMMAND
+        ${CMAKE_COMMAND} -E copy_if_different "${BOSSArrowStorage_BINARY_DIR}/deps/bin/BOSS.dll" "${BOSSArrowStorage_BINARY_DIR}/"
+    )
+endif(NOT MSVC)
+
+list(APPEND AllTargets BOSSArrowStorage BOSSArrowStorageTests)
+
+foreach(Target IN LISTS AllTargets)
+    target_link_libraries(${Target} Threads::Threads)
+    set_target_properties(${Target} PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    if(MSVC)
+        target_compile_options(${Target} PUBLIC "/Zc:__cplusplus")
+        target_compile_options(${Target} PUBLIC "/EHsc")
+        # link against all needed symbols for loading BOSSArrowStorage as a plugin
+        target_link_libraries(${Target} ${BOSSArrowStorage_BINARY_DIR}/deps/lib/BOSS.lib)
+        target_link_libraries(${Target} ${BOSSArrowStorage_BINARY_DIR}/deps/lib/Tests.lib)
+    endif()
+    set_target_properties(${Target} PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+    add_dependencies(${Target} BOSS)
+    target_compile_options(${Target} PUBLIC -DARROW_STATIC)
+    target_include_directories(${Target} SYSTEM PUBLIC ${BOSSArrowStorage_BINARY_DIR}/deps/include)
+    if(UNIX AND NOT APPLE)
+        target_link_libraries(${Target} rt)
+    endif()
+endforeach()
 
 set_target_properties(BOSSArrowStorage PROPERTIES INSTALL_RPATH_USE_LINK_PATH TRUE)
 install(TARGETS BOSSArrowStorage LIBRARY DESTINATION lib)
+install(TARGETS BOSSArrowStorageTests RUNTIME DESTINATION bin)
