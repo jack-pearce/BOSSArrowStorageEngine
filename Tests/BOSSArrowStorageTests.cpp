@@ -36,7 +36,7 @@ TEST_CASE("Create and Load TPCH's Nation", "[tpch]") {
           "Table"_("Column"_("N_NATIONKEY"_, "List"_()), "Column"_("N_NAME"_, "List"_()),
                    "Column"_("N_REGIONKEY"_, "List"_()), "Column"_("N_COMMENT"_, "List"_())));
 
-  auto loadResult = engine.evaluate("Load"_("NATION"_, "../data/tpch_0.1MB/nation.tbl"));
+  auto loadResult = engine.evaluate("Load"_("NATION"_, "../Tests/nation.tbl"));
   REQUIRE(loadResult == boss::Expression(true));
 
   auto loadedResult = engine.evaluate("NATION"_);
