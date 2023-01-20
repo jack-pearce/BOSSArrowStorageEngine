@@ -16,7 +16,7 @@ TEST_CASE("Empty Table", "[empty]") {
 
   auto rewriteResult = engine.evaluate(
       "Select"_("Project"_("DummyTable"_, "As"_("ColA"_, "ColA"_, "ColB"_, "ColB"_)),
-                "Greater"_("ColA"_, 10))); //NOLINT
+                "Greater"_("ColA"_, 10))); // NOLINT
   REQUIRE(rewriteResult == "Select"_("Project"_("Table"_("Column"_("ColA"_, "List"_()),
                                                          "Column"_("ColB"_, "List"_()),
                                                          "Column"_("ColC"_, "List"_())),
@@ -42,7 +42,7 @@ TEST_CASE("Create and Load TPCH's Nation", "[tpch]") {
   auto loadedResult = engine.evaluate("NATION"_);
   REQUIRE(boss::get<boss::ComplexExpression>(loadedResult).getHead() == "Table"_);
 
-  std::cout << loadedResult << std::endl;
+  INFO(loadedResult);
 
   for(int i = 0; i < 4; ++i) {
     REQUIRE(boss::get<boss::ComplexExpression>(
