@@ -44,6 +44,14 @@ set(CMAKE_BUILD_TYPE "${CMAKE_BUILD_TYPE}" CACHE STRING
 
 set(CMAKE_POSITION_INDEPENDENT_CODE TRUE) # make sure all dependent libraries are compiled with that option
 
+if(MSVC)
+    set(BOSS_LINK_LIBRARY_PREFIX ${CMAKE_LINK_LIBRARY_PREFIX})
+    set(BOSS_LINK_LIBRARY_SUFFIX ${CMAKE_LINK_LIBRARY_SUFFIX})
+else()
+    set(BOSS_LINK_LIBRARY_PREFIX ${CMAKE_SHARED_LIBRARY_PREFIX})
+    set(BOSS_LINK_LIBRARY_SUFFIX ${CMAKE_SHARED_LIBRARY_SUFFIX})
+endif(MSVC)
+
 include(ExternalProject)
 
 # Core BOSS
@@ -68,7 +76,7 @@ if(BUILD_BOSS_FROM_SOURCE)
     DOWNLOAD_DIR $ENV{HOME}/.cmake-downloads/${CMAKE_PROJECT_NAME}
 		CMAKE_ARGS -DCMAKE_VERBOSE_MAKEFILE=${CMAKE_VERBOSE_MAKEFILE} -DCMAKE_INSTALL_PREFIX=${BOSSArrowStorage_BINARY_DIR}/deps $<IF:$<CONFIG:>,,-DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}>
                    -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}  -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER} -DCMAKE_CXX_FLAGS=${CMAKE_CXX_FLAGS}
-    BUILD_BYPRODUCTS ${BOSSArrowStorage_BINARY_DIR}/deps/lib/BOSS.lib ${BOSSArrowStorage_BINARY_DIR}/deps/lib/Tests.lib
+    BUILD_BYPRODUCTS ${BOSSArrowStorage_BINARY_DIR}/deps/lib/${BOSS_LINK_LIBRARY_PREFIX}BOSS${BOSS_LINK_LIBRARY_SUFFIX}
     )
 else()
 ExternalProject_Add(BOSS
@@ -79,7 +87,7 @@ ExternalProject_Add(BOSS
   CONFIGURE_COMMAND ""
   BUILD_COMMAND ""
   INSTALL_COMMAND ""
-  BUILD_BYPRODUCTS ${BOSSArrowStorage_BINARY_DIR}/deps/lib/BOSS.lib ${BOSSArrowStorage_BINARY_DIR}/deps/lib/Tests.lib
+  BUILD_BYPRODUCTS ${BOSSArrowStorage_BINARY_DIR}/deps/lib/${BOSS_LINK_LIBRARY_PREFIX}BOSS${BOSS_LINK_LIBRARY_SUFFIX}
   )
 endif()
 
@@ -114,17 +122,18 @@ add_library(BOSSArrowStorage ${LibraryType} ${ImplementationFiles})
 # Tests
 add_executable(BOSSArrowStorageTests ${ImplementationFiles} ${TestFiles})
 add_dependencies(BOSSArrowStorageTests catch2)
-if(NOT MSVC)
+if(UNIX AND NOT APPLE)
     # for now, need linking with BOSS to successfully compile the tests with the Arrow symbols required by the engine
     # ideally, we would like to plug additional tests to BOSS tests
-    target_link_libraries(BOSSArrowStorageTests ${BOSSArrowStorage_BINARY_DIR}/deps/lib/${CMAKE_SHARED_LIBRARY_PREFIX}BOSS${CMAKE_SHARED_LIBRARY_SUFFIX})
-else()
-    # similarly for windows, we need to make sure to get the BOSS.dll in the right folder for the tests executable
+    target_link_libraries(BOSSArrowStorageTests ${BOSSArrowStorage_BINARY_DIR}/deps/lib/${BOSS_LINK_LIBRARY_PREFIX}BOSS${BOSS_LINK_LIBRARY_SUFFIX})
+endif(UNIX AND NOT APPLE)
+if(MSVC)
+    # On windows, we need to make sure to get the BOSS.dll in the right folder for the tests executable
     add_custom_command(TARGET BOSSArrowStorageTests POST_BUILD
       COMMAND
         ${CMAKE_COMMAND} -E copy_if_different "${BOSSArrowStorage_BINARY_DIR}/deps/bin/BOSS.dll" "${BOSSArrowStorage_BINARY_DIR}/"
     )
-endif(NOT MSVC)
+endif(MSVC)
 
 list(APPEND AllTargets BOSSArrowStorage BOSSArrowStorageTests)
 
@@ -134,9 +143,6 @@ foreach(Target IN LISTS AllTargets)
     if(MSVC)
         target_compile_options(${Target} PUBLIC "/Zc:__cplusplus")
         target_compile_options(${Target} PUBLIC "/EHsc")
-        # link against all needed symbols for loading BOSSArrowStorage as a plugin
-        target_link_libraries(${Target} ${BOSSArrowStorage_BINARY_DIR}/deps/lib/BOSS.lib)
-        target_link_libraries(${Target} ${BOSSArrowStorage_BINARY_DIR}/deps/lib/Tests.lib)
     endif()
     set_target_properties(${Target} PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
     add_dependencies(${Target} BOSS)
@@ -144,6 +150,9 @@ foreach(Target IN LISTS AllTargets)
     target_include_directories(${Target} SYSTEM PUBLIC ${BOSSArrowStorage_BINARY_DIR}/deps/include)
     if(UNIX AND NOT APPLE)
         target_link_libraries(${Target} rt)
+    else()
+        # link against all needed symbols for loading BOSSArrowStorage as a plugin
+        target_link_libraries(${Target} ${BOSSArrowStorage_BINARY_DIR}/deps/lib/${BOSS_LINK_LIBRARY_PREFIX}BOSS${BOSS_LINK_LIBRARY_SUFFIX})
     endif()
 endforeach()
 
