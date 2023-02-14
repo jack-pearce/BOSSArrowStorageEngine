@@ -201,13 +201,13 @@ bool Engine::load(Symbol const& tableSymbol, std::string const& filepath, char s
                         if constexpr(std::is_constructible_v<expressions::ExpressionSpanArgument,
                                                              boss::Span<ElementType>> &&
                                      std::is_constructible_v<boss::Span<ElementType>, ElementType*,
-                                                             int, std::function<void(void*)>>) {
+                                                             int, std::function<void(void)>>) {
                           // TODO: why listExpr is not always a r-value reference?
                           auto [head, statics, dynamics, spans] = std::move(listExpr) // NOLINT
                                                                       .decompose();
                           spans.emplace_back(boss::Span<ElementType>(
                               columnArray.raw_values(), columnArray.length(),
-                              [stored = arrowArrayPtr](auto&& /*unused*/) {}));
+                              [stored = arrowArrayPtr]() {}));
                           listExpr = ComplexExpression{head, std::move(statics),
                                                        std::move(dynamics), std::move(spans)};
                           return;
