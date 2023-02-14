@@ -81,6 +81,14 @@ boss::Expression Engine::evaluate(boss::Expression&& expr) { // NOLINT
                                             ComplexExpression("Table"_, std::move(columns))));
               return true;
             }
+            if(e.getHead() == "DropTable"_) {
+              auto const& table = get<Symbol>(args[0]);
+              auto it = tables.find(table.getName());
+              if(it != tables.end()) {
+                tables.erase(it);
+              }
+              return true;
+            }
             if(e.getHead() == "Load"_) {
               auto const& table = get<Symbol>(args[0]);
               auto const& filepath = get<std::string>(args[1]);
