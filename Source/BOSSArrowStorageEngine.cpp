@@ -7,6 +7,7 @@
 #include <Utilities.hpp>
 
 #include <arrow/array/array_base.h>
+#include <arrow/array/builder_primitive.h>
 #include <arrow/csv/api.h>
 #include <arrow/io/api.h>
 #include <arrow/ipc/reader.h>
@@ -179,7 +180,7 @@ bool Engine::load(Symbol const& tableSymbol, std::string const& filepath, char s
       std::transform(
           std::make_move_iterator(columns.begin()), std::make_move_iterator(columns.end()),
           columns.begin(), [&batchColumnIt](auto&& e) -> Expression {
-            auto const& arrowArrayPtr = *batchColumnIt++;
+            auto arrowArrayPtr = *batchColumnIt++;
             auto [head, statics, dynamics, spans] =
                 std::move(get<ComplexExpression>(e)).decompose();
             auto dynArgsIt = std::next(dynamics.begin());
@@ -187,6 +188,26 @@ bool Engine::load(Symbol const& tableSymbol, std::string const& filepath, char s
             columnData = visit(
                 [&arrowArrayPtr](auto&& listExpr) -> Expression {
                   if constexpr(isComplexExpression<decltype(listExpr)>) {
+                    if(arrowArrayPtr->type_id() == arrow::Type::DATE32) {
+                      // convert to int64_t
+                      auto intBuilder = arrow::Int64Builder();
+                      auto status = intBuilder.AppendEmptyValues(arrowArrayPtr->length());
+                      if(!status.ok()) {
+                        throw std::runtime_error(status.ToString());
+                      }
+                      auto const* srcArrayData =
+                          std::dynamic_pointer_cast<arrow::Date32Array>(arrowArrayPtr)
+                              ->raw_values();
+                      for(int64_t i = 0; i < arrowArrayPtr->length(); ++i) {
+                        intBuilder[i] = srcArrayData[i];
+                      }
+                      auto int64arrayPtr = std::shared_ptr<arrow::Int64Array>();
+                      auto finishStatus = intBuilder.Finish(&int64arrayPtr);
+                      if(!finishStatus.ok()) {
+                        throw std::runtime_error(finishStatus.ToString());
+                      }
+                      arrowArrayPtr = int64arrayPtr;
+                    }
                     auto visitor = ArrowArrayVisitor([&arrowArrayPtr,
                                                       &listExpr](auto const& columnArray) {
                       if constexpr(std::is_convertible_v<decltype(columnArray),
