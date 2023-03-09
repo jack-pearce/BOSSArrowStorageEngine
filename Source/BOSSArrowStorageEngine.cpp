@@ -220,9 +220,14 @@ bool Engine::load(Symbol const& tableSymbol, std::string const& filepath, char s
                                                       &listExpr](auto const& columnArray) {
                       if constexpr(std::is_convertible_v<decltype(columnArray),
                                                          arrow::StringArray const&>) {
-                        // TODO
-                        listExpr =
-                            std::move(listExpr); // NOLINT(bugprone-move-forwarding-reference)
+                        // TODO: properly implement string arrays
+                        // for now make it an integer column with arbitrary values
+                        auto [head, statics, dynamics, spans] = std::move(listExpr) // NOLINT
+                                                                    .decompose();
+                        spans.emplace_back(
+                            boss::Span<int64_t>(std::vector<int64_t>(columnArray.length())));
+                        listExpr = ComplexExpression{head, std::move(statics), std::move(dynamics),
+                                                     std::move(spans)};
                         return;
                       } else if constexpr(std::is_convertible_v<decltype(columnArray),
                                                                 arrow::PrimitiveArray const&>) {
