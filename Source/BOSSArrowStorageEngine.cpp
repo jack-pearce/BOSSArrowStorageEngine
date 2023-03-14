@@ -80,11 +80,19 @@ static boss::ComplexExpression shallowCopy(boss::ComplexExpression const& e) {
   std::transform(spans.begin(), spans.end(), std::back_inserter(spansCopy), [](auto const& span) {
     return std::visit(
         [](auto const& typedSpan) -> boss::expressions::ExpressionSpanArgument {
-          using SpanType = std::decay_t<decltype(typedSpan)>;
-          // just a shallow copy of the span
+          // just do a shallow copy of the span
           // the storage's span keeps the ownership
           // (since the storage will be alive until the query finishes)
-          return SpanType(typedSpan.begin(), typedSpan.size(), []() {});
+          using SpanType = std::decay_t<decltype(typedSpan)>;
+          using T = std::remove_const_t<typename SpanType::element_type>;
+          if constexpr(std::is_same_v<T, bool>) {
+            // TODO: this would still keep const spans for bools, need to fix later
+            return SpanType(typedSpan.begin(), typedSpan.size(), []() {});
+          } else {
+            // force non-const value for now (otherwise expressions cannot be moved)
+            auto* ptr = const_cast<T*>(typedSpan.begin()); // NOLINT
+            return boss::Span<T>(ptr, typedSpan.size(), []() {});
+          }
         },
         span);
   });
