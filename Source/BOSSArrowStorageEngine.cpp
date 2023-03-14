@@ -61,6 +61,36 @@ bool constexpr VERBOSE_LOADING = false;
 bool constexpr VERBOSE_LOADING = true;
 #endif
 
+static boss::ComplexExpression shallowCopy(boss::ComplexExpression const& e) {
+  auto const& head = e.getHead();
+  auto const& dynamics = e.getDynamicArguments();
+  auto const& spans = e.getSpanArguments();
+  boss::ExpressionArguments dynamicsCopy;
+  std::transform(dynamics.begin(), dynamics.end(), std::back_inserter(dynamicsCopy),
+                 [](auto const& arg) {
+                   return std::visit(
+                       boss::utilities::overload(
+                           [&](boss::ComplexExpression const& expr) -> boss::Expression {
+                             return shallowCopy(expr);
+                           },
+                           [](auto const& otherTypes) -> boss::Expression { return otherTypes; }),
+                       arg);
+                 });
+  boss::expressions::ExpressionSpanArguments spansCopy;
+  std::transform(spans.begin(), spans.end(), std::back_inserter(spansCopy), [](auto const& span) {
+    return std::visit(
+        [](auto const& typedSpan) -> boss::expressions::ExpressionSpanArgument {
+          using SpanType = std::decay_t<decltype(typedSpan)>;
+          // just a shallow copy of the span
+          // the storage's span keeps the ownership
+          // (since the storage will be alive until the query finishes)
+          return SpanType(typedSpan.begin(), typedSpan.size(), []() {});
+        },
+        span);
+  });
+  return boss::ComplexExpression(head, {}, std::move(dynamicsCopy), std::move(spansCopy));
+}
+
 boss::Expression Engine::evaluate(boss::Expression&& expr) { // NOLINT
   try {
     return visit(
@@ -109,7 +139,7 @@ boss::Expression Engine::evaluate(boss::Expression&& expr) { // NOLINT
             if(it == tables.end()) {
               return std::forward<decltype(e)>(e);
             }
-            return it->second.clone();
+            return shallowCopy(it->second);
           } else {
             return std::forward<decltype(e)>(e);
           }
