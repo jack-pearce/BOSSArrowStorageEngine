@@ -249,10 +249,11 @@ bool Engine::load(Symbol const& tableSymbol, std::string const& filepath, char s
             auto arrowArrayPtr = *batchColumnIt++;
             auto [head, statics, dynamics, spans] =
                 std::move(get<ComplexExpression>(e)).decompose();
+            auto const& columnName = get<Symbol>(dynamics[0]).getName();
             auto dynArgsIt = std::next(dynamics.begin());
             auto& columnData = *dynArgsIt;
             columnData = visit(
-                [&arrowArrayPtr, &dynamics, this](auto&& listExpr) -> Expression {
+                [&arrowArrayPtr, &columnName, this](auto&& listExpr) -> Expression {
                   if constexpr(isComplexExpression<decltype(listExpr)>) {
                     if(arrowArrayPtr->type_id() == arrow::Type::DATE32) {
                       // convert to int64_t
@@ -277,7 +278,6 @@ bool Engine::load(Symbol const& tableSymbol, std::string const& filepath, char s
                           dynamic_cast<arrow::DictionaryArray const&>(*arrowArrayPtr);
                       auto const& dictionaryPtr = dictionaryArray.dictionary();
                       // store the dictionary separately (as a single unified dictionary)
-                      auto const& columnName = get<Symbol>(dynamics[0]).getName();
                       auto& unifierPtr = dictionaries[columnName];
                       if(!unifierPtr) {
                         auto createUnifierResult =
