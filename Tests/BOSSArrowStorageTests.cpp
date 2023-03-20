@@ -40,24 +40,32 @@ TEST_CASE("Create and Load TPCH's Nation", "[tpch]") {
   REQUIRE(loadResult == boss::Expression(true));
 
   auto loadedResult = engine.evaluate("NATION"_);
-  REQUIRE(boss::get<boss::ComplexExpression>(loadedResult).getHead() == "Table"_);
 
-  INFO(loadedResult);
+  auto result = std::move(loadedResult); // check if the spans can be moved
+  REQUIRE(boss::get<boss::ComplexExpression>(result).getHead() == "Table"_);
+
+  INFO(result);
 
   for(int i = 0; i < 4; ++i) {
     REQUIRE(boss::get<boss::ComplexExpression>(
-                boss::get<boss::ComplexExpression>(loadedResult).getArguments()[i])
+                boss::get<boss::ComplexExpression>(result).getArguments()[i])
                 .getHead() == "Column"_);
     REQUIRE(boss::get<boss::ComplexExpression>(
                 boss::get<boss::ComplexExpression>(
-                    boss::get<boss::ComplexExpression>(loadedResult).getArguments()[i])
+                    boss::get<boss::ComplexExpression>(result).getArguments()[i])
                     .getArguments()[1])
                 .getHead() == "List"_);
     REQUIRE(boss::get<boss::ComplexExpression>(
                 boss::get<boss::ComplexExpression>(
-                    boss::get<boss::ComplexExpression>(loadedResult).getArguments()[i])
+                    boss::get<boss::ComplexExpression>(result).getArguments()[i])
                     .getArguments()[1])
                 .getArguments()
                 .size() > 1);
   }
+
+  auto rewriteStrings = engine.evaluate("Select"_(
+      "Project"_("NATION"_, "As"_("N_NAME"_, "N_NAME"_)), "StringContainsQ"_("N_NAME"_, "BRAZIL")));
+  INFO(rewriteStrings);
+  REQUIRE(boss::get<boss::ComplexExpression>(rewriteStrings).getDynamicArguments()[1] ==
+          "Equal"_("N_NAME"_, 2));
 }

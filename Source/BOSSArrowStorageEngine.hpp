@@ -3,6 +3,8 @@
 #include <BOSS.hpp>
 #include <Expression.hpp>
 
+#include <arrow/array/array_dict.h>
+
 #include <unordered_map>
 
 #ifdef _WIN32
@@ -28,6 +30,7 @@ public:
 private:
   bool memoryMapped = true;
   std::unordered_map<std::string, boss::ComplexExpression> tables;
+  std::unordered_map<std::string, std::unique_ptr<arrow::DictionaryUnifier>> dictionaries;
 
   bool load(Symbol const& tableSymbol, std::string const& filepath);
   bool load(Symbol const& tableSymbol, std::string const& filepath, char separator,

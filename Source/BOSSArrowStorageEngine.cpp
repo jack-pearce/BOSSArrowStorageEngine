@@ -7,6 +7,7 @@
 #include <Utilities.hpp>
 
 #include <arrow/array/array_base.h>
+#include <arrow/array/builder_binary.h>
 #include <arrow/array/builder_primitive.h>
 #include <arrow/csv/api.h>
 #include <arrow/io/api.h>
@@ -133,6 +134,25 @@ boss::Expression Engine::evaluate(boss::Expression&& expr) { // NOLINT
               load(table, filepath);
               return true;
             }
+            if(e.getHead() == "Equal"_ || e.getHead() == "StringContainsQ"_) {
+              if(std::holds_alternative<Symbol>(args[0]) &&
+                 std::holds_alternative<std::string>(args[1])) {
+                auto const& column = get<Symbol>(args[0]);
+                auto const& str = get<std::string>(args[1]);
+                auto dummyDicBuilder = arrow::StringBuilder();
+                dummyDicBuilder.Append(str);
+                std::shared_ptr<arrow::StringArray> dummyDictionaryPtr;
+                dummyDicBuilder.Finish(&dummyDictionaryPtr);
+                auto const& unifierPtr = dictionaries[column.getName()];
+                if(unifierPtr) {
+                  std::shared_ptr<arrow::Buffer> indices;
+                  unifierPtr->Unify(*dummyDictionaryPtr, &indices);
+                  int64_t index = *reinterpret_cast<int32_t const*>(indices->data());
+                  return "Equal"_(column, index);
+                }
+                return std::move(e);
+              }
+            }
             visitTransform(args, [this](auto&& arg) -> boss::Expression {
               if constexpr(isComplexExpression<decltype(arg)> &&
                            std::is_lvalue_reference_v<decltype(arg)>) {
@@ -225,14 +245,14 @@ bool Engine::load(Symbol const& tableSymbol, std::string const& filepath, char s
       auto batchColumnIt = batchColumns.begin();
       std::transform(
           std::make_move_iterator(columns.begin()), std::make_move_iterator(columns.end()),
-          columns.begin(), [&batchColumnIt](auto&& e) -> Expression {
+          columns.begin(), [&batchColumnIt, this](auto&& e) -> Expression {
             auto arrowArrayPtr = *batchColumnIt++;
             auto [head, statics, dynamics, spans] =
                 std::move(get<ComplexExpression>(e)).decompose();
             auto dynArgsIt = std::next(dynamics.begin());
             auto& columnData = *dynArgsIt;
             columnData = visit(
-                [&arrowArrayPtr](auto&& listExpr) -> Expression {
+                [&arrowArrayPtr, &dynamics, this](auto&& listExpr) -> Expression {
                   if constexpr(isComplexExpression<decltype(listExpr)>) {
                     if(arrowArrayPtr->type_id() == arrow::Type::DATE32) {
                       // convert to int64_t
@@ -242,10 +262,47 @@ bool Engine::load(Symbol const& tableSymbol, std::string const& filepath, char s
                         throw std::runtime_error(status.ToString());
                       }
                       auto const* srcArrayData =
-                          std::dynamic_pointer_cast<arrow::Date32Array>(arrowArrayPtr)
-                              ->raw_values();
+                          dynamic_cast<arrow::Date32Array const&>(*arrowArrayPtr).raw_values();
                       for(int64_t i = 0; i < arrowArrayPtr->length(); ++i) {
                         intBuilder[i] = srcArrayData[i];
+                      }
+                      auto int64arrayPtr = std::shared_ptr<arrow::Int64Array>();
+                      auto finishStatus = intBuilder.Finish(&int64arrayPtr);
+                      if(!finishStatus.ok()) {
+                        throw std::runtime_error(finishStatus.ToString());
+                      }
+                      arrowArrayPtr = int64arrayPtr;
+                    } else if(arrowArrayPtr->type_id() == arrow::Type::DICTIONARY) {
+                      auto const& dictionaryArray =
+                          dynamic_cast<arrow::DictionaryArray const&>(*arrowArrayPtr);
+                      auto const& dictionaryPtr = dictionaryArray.dictionary();
+                      // store the dictionary separately (as a single unified dictionary)
+                      auto const& columnName = get<Symbol>(dynamics[0]).getName();
+                      auto& unifierPtr = dictionaries[columnName];
+                      if(!unifierPtr) {
+                        auto createUnifierResult =
+                            arrow::DictionaryUnifier::Make(dictionaryPtr->type());
+                        if(!createUnifierResult.ok()) {
+                          throw std::runtime_error(createUnifierResult.status().ToString());
+                        }
+                        unifierPtr = std::move(*createUnifierResult);
+                      }
+                      std::shared_ptr<arrow::Buffer> transposeBuffer;
+                      unifierPtr->Unify(*dictionaryPtr, &transposeBuffer);
+                      // transpose indices (to unified dictionary) and convert to int64_t
+                      auto const& indices = *dictionaryArray.indices();
+                      auto const* srcArrayData =
+                          dynamic_cast<arrow::Int32Array const&>(indices).raw_values();
+                      auto transposeArray =
+                          arrow::Int32Array(dictionaryPtr->length(), transposeBuffer);
+                      auto const* transposeMap = transposeArray.raw_values();
+                      auto intBuilder = arrow::Int64Builder();
+                      auto status = intBuilder.AppendEmptyValues(arrowArrayPtr->length());
+                      if(!status.ok()) {
+                        throw std::runtime_error(status.ToString());
+                      }
+                      for(int64_t i = 0; i < arrowArrayPtr->length(); ++i) {
+                        intBuilder[i] = transposeMap[srcArrayData[i]];
                       }
                       auto int64arrayPtr = std::shared_ptr<arrow::Int64Array>();
                       auto finishStatus = intBuilder.Finish(&int64arrayPtr);
@@ -356,6 +413,7 @@ bool Engine::load(Symbol const& tableSymbol, std::string const& filepath, char s
     auto convertOptions = arrow::csv::ConvertOptions::Defaults();
     convertOptions.include_columns = columnNames;
     convertOptions.include_missing_columns = true;
+    convertOptions.auto_dict_encode = true;
 
     auto maybeCvsReader = arrow::csv::StreamingReader::Make(io_context, cvsInput, readOptions,
                                                             parseOptions, convertOptions);
@@ -384,16 +442,30 @@ bool Engine::load(Symbol const& tableSymbol, std::string const& filepath, char s
     std::shared_ptr<arrow::ipc::RecordBatchWriter> writer;
     std::shared_ptr<arrow::RecordBatch> batch;
     while(cvsReader->ReadNext(&batch).ok() && batch) {
+      auto const& schema = batch->schema();
       if(!writer) {
-        auto const& schema = batch->schema();
-
-        auto maybeWriter = arrow::ipc::MakeStreamWriter(memoryMappedFile, schema);
+        auto writerOptions = arrow::ipc::IpcWriteOptions::Defaults();
+        writerOptions.unify_dictionaries = true;
+        auto maybeWriter = arrow::ipc::MakeStreamWriter(memoryMappedFile, schema, writerOptions);
         if(!maybeWriter.ok()) {
           throw std::runtime_error("failed to open memory-mapped stream writer\n" +
                                    maybeWriter.status().ToString());
         }
-
         writer = *maybeWriter;
+      }
+
+      const arrow::ipc::DictionaryFieldMapper mapper(*schema);
+      auto dictionariesResult = arrow::ipc::CollectDictionaries(*batch, mapper);
+      if(!dictionariesResult.ok()) {
+        throw std::runtime_error("failed to collect dictionaries\n" +
+                                 dictionariesResult.status().ToString());
+      }
+
+      int64_t dictionarySize = 0;
+      for(auto const& dictionary : *dictionariesResult) {
+        auto const& dictionaryArray = dynamic_cast<arrow::StringArray const&>(*dictionary.second);
+        dictionarySize += dictionaryArray.length() * sizeof(arrow::StringArray::offset_type);
+        dictionarySize += dictionaryArray.total_values_length();
       }
 
       int64_t recordBatchSize = 0;
@@ -408,7 +480,7 @@ bool Engine::load(Symbol const& tableSymbol, std::string const& filepath, char s
         currentSize = recordBatchSize;
       }
 
-      auto resizeStatus = memoryMappedFile->Resize(currentSize + recordBatchSize);
+      auto resizeStatus = memoryMappedFile->Resize(currentSize + dictionarySize + recordBatchSize);
       if(!resizeStatus.ok()) {
         throw std::runtime_error(resizeStatus.ToString());
       }
