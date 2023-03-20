@@ -396,6 +396,8 @@ bool Engine::load(Symbol const& tableSymbol, std::string const& filepath, char s
 
     auto readOptions = arrow::csv::ReadOptions::Defaults();
 
+    readOptions.block_size = 1 << 28; // ~268 MB
+
     if(!hasHeader) {
       readOptions.column_names = columnNames;
 
