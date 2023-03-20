@@ -466,10 +466,18 @@ bool Engine::load(Symbol const& tableSymbol, std::string const& filepath, char s
       int64_t dictionarySize = 0;
       for(auto const& dictionary : *dictionariesResult) {
         auto const& dictionaryArray = dynamic_cast<arrow::StringArray const&>(*dictionary.second);
-        dictionarySize += dictionaryArray.length() * sizeof(arrow::StringArray::offset_type);
-        dictionarySize += dictionaryArray.total_values_length();
+        auto dummySchema = std::make_shared<arrow::Schema>(
+            arrow::FieldVector{std::make_shared<arrow::Field>("dummy", dictionaryArray.type())});
+        auto dummybatchPtr = arrow::RecordBatch::Make(dummySchema, dictionaryArray.length(),
+                                                      arrow::ArrayVector{dictionary.second});
+        int64_t thisDictionarySize = 0;
+        auto getSizeStatus = arrow::ipc::GetRecordBatchSize(*dummybatchPtr, &thisDictionarySize);
+        if(!getSizeStatus.ok()) {
+          throw std::runtime_error("failed to get dictionary size\n" + getSizeStatus.ToString());
+        }
+        dictionarySize += thisDictionarySize;
       }
-
+	
       int64_t recordBatchSize = 0;
       auto getSizeStatus = arrow::ipc::GetRecordBatchSize(*batch, &recordBatchSize);
       if(!getSizeStatus.ok()) {
