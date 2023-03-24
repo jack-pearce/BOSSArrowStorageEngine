@@ -396,7 +396,7 @@ bool Engine::load(Symbol const& tableSymbol, std::string const& filepath, char s
 
     auto readOptions = arrow::csv::ReadOptions::Defaults();
 
-    readOptions.block_size = 1 << 28; // ~268 MB
+    readOptions.block_size = 1 << 30; // 1GB
 
     if(!hasHeader) {
       readOptions.column_names = columnNames;
@@ -447,7 +447,6 @@ bool Engine::load(Symbol const& tableSymbol, std::string const& filepath, char s
       auto const& schema = batch->schema();
       if(!writer) {
         auto writerOptions = arrow::ipc::IpcWriteOptions::Defaults();
-        writerOptions.unify_dictionaries = true;
         auto maybeWriter = arrow::ipc::MakeStreamWriter(memoryMappedFile, schema, writerOptions);
         if(!maybeWriter.ok()) {
           throw std::runtime_error("failed to open memory-mapped stream writer\n" +
@@ -475,9 +474,10 @@ bool Engine::load(Symbol const& tableSymbol, std::string const& filepath, char s
         if(!getSizeStatus.ok()) {
           throw std::runtime_error("failed to get dictionary size\n" + getSizeStatus.ToString());
         }
-        dictionarySize += thisDictionarySize;
+        dictionarySize +=
+            thisDictionarySize * 2; // temp fix: calculated dictionary size is not large enough
       }
-	
+
       int64_t recordBatchSize = 0;
       auto getSizeStatus = arrow::ipc::GetRecordBatchSize(*batch, &recordBatchSize);
       if(!getSizeStatus.ok()) {
