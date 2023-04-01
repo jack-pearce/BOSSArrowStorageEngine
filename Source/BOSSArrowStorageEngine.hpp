@@ -28,13 +28,30 @@ public:
   boss::Expression evaluate(boss::Expression&& expr);
 
 private:
-  bool memoryMapped = true;
+  bool memoryMapped = true; // TODO: make it a modifiable parameter
   std::unordered_map<std::string, boss::ComplexExpression> tables;
   std::unordered_map<std::string, std::unique_ptr<arrow::DictionaryUnifier>> dictionaries;
 
-  bool load(Symbol const& tableSymbol, std::string const& filepath);
-  bool load(Symbol const& tableSymbol, std::string const& filepath, char separator,
-            bool eolHasSeparator, bool hasHeader, unsigned long long maxRows = -1);
+  void load(Symbol const& tableSymbol, std::string const& filepath,
+            unsigned long long maxRows = -1);
+
+  std::shared_ptr<arrow::RecordBatchReader> static loadFromCsvFile(
+      std::string const& filepath, std::vector<std::string> const& columnNames);
+  std::shared_ptr<arrow::RecordBatchReader> static loadFromCsvFile(
+      std::string const& filepath, std::vector<std::string> const& columnNames, char separator,
+      bool eolHasSeparator, bool hasHeader);
+
+  static void
+  loadIntoMemoryMappedFile(std::shared_ptr<arrow::io::MemoryMappedFile>& memoryMappedFile,
+                           std::shared_ptr<arrow::RecordBatchReader>& csvReader);
+
+  template <typename Columns>
+  void loadIntoColumns(Columns& columns, std::shared_ptr<arrow::RecordBatchReader>& reader,
+                       unsigned long long maxRows);
+
+  static std::shared_ptr<arrow::Array> convertToInt64Array(arrow::Date32Array const& dateArray);
+  std::shared_ptr<arrow::Array> convertToInt64Array(arrow::DictionaryArray const& dictionaryArray,
+                                                    std::string const& dictionaryName);
 };
 
 } // namespace boss::engines::arrow_storage
