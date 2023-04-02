@@ -135,16 +135,16 @@ private:
 };
 } // namespace utilities
 
-// Date32 -> Int64
-std::shared_ptr<arrow::Array> Engine::convertToInt64Array(arrow::Date32Array const& dateArray) {
+// Int32 -> Int64
+std::shared_ptr<arrow::Int64Array> Engine::convertToInt64Array(int32_t const* srcData,
+                                                               int64_t size) {
   auto intBuilder = arrow::Int64Builder();
-  auto status = intBuilder.AppendEmptyValues(dateArray.length());
+  auto status = intBuilder.AppendEmptyValues(size);
   if(!status.ok()) {
     throw std::runtime_error(status.ToString());
   }
-  auto const* srcArrayData = dateArray.raw_values();
-  for(int64_t i = 0; i < dateArray.length(); ++i) {
-    intBuilder[i] = srcArrayData[i];
+  for(int64_t i = 0; i < size; ++i) {
+    intBuilder[i] = srcData[i];
   }
   auto int64arrayPtr = std::shared_ptr<arrow::Int64Array>();
   auto finishStatus = intBuilder.Finish(&int64arrayPtr);
@@ -155,7 +155,7 @@ std::shared_ptr<arrow::Array> Engine::convertToInt64Array(arrow::Date32Array con
 }
 
 // Dictionary -> Int64 (+ store separately the strings)
-std::shared_ptr<arrow::Array>
+std::shared_ptr<arrow::Int64Array>
 Engine::convertToInt64Array(arrow::DictionaryArray const& dictionaryArray,
                             std::string const& dictionaryName) {
   auto const& dictionaryPtr = dictionaryArray.dictionary();
@@ -228,7 +228,8 @@ void Engine::loadIntoColumns(Columns& columns, std::shared_ptr<arrow::RecordBatc
                   // prepare arrays (conversions to compatible types)
                   if(arrowArrayPtr->type_id() == arrow::Type::DATE32) {
                     arrowArrayPtr = convertToInt64Array(
-                        dynamic_cast<arrow::Date32Array const&>(*arrowArrayPtr));
+                        dynamic_cast<arrow::Date32Array const&>(*arrowArrayPtr).raw_values(),
+                        arrowArrayPtr->length());
                   } else if(arrowArrayPtr->type_id() == arrow::Type::DICTIONARY) {
                     arrowArrayPtr = convertToInt64Array(
                         dynamic_cast<arrow::DictionaryArray const&>(*arrowArrayPtr),
@@ -239,18 +240,31 @@ void Engine::loadIntoColumns(Columns& columns, std::shared_ptr<arrow::RecordBatc
                                                                &listExpr](auto const& columnArray) {
                     if constexpr(std::is_convertible_v<decltype(columnArray),
                                                        arrow::StringArray const&>) {
-                      // TODO: properly implement string arrays
-                      // for now make it an integer column with arbitrary values
-                      auto [head, statics, dynamics, spans] = std::move(listExpr) // NOLINT
-                                                                  .decompose();
-                      spans.emplace_back(
-                          boss::Span<int64_t>(std::vector<int64_t>(columnArray.length())));
-                      listExpr = ComplexExpression{head, std::move(statics), std::move(dynamics),
-                                                   std::move(spans)};
+                      // convert to span of offsets + buffer as string argument
+                      auto offsetsArrayPtr = convertToInt64Array(columnArray.raw_value_offsets(),
+                                                                 columnArray.length() + 1);
+                      auto [unused0, unused1, dynamics, unused2] = std::move(listExpr) // NOLINT
+                                                                       .decompose();
+                      if(dynamics.empty()) {
+                        dynamics.emplace_back("List"_());
+                        dynamics.emplace_back(std::string());
+                      }
+                      auto& encodedList = get<ComplexExpression>(dynamics[0]);
+                      auto [head, unused3, unused4, spans] = std::move(encodedList) // NOLINT
+                                                                 .decompose();
+                      spans.emplace_back(boss::Span<int64_t const>(
+                          offsetsArrayPtr->raw_values(), offsetsArrayPtr->length(),
+                          [stored = offsetsArrayPtr]() {}));
+                      encodedList = ComplexExpression{head, {}, {}, std::move(spans)};
+                      auto& buffer = get<std::string>(dynamics[1]);
+                      buffer += std::string(
+                          static_cast<arrow::util::string_view>(*columnArray.value_data()));
+                      listExpr =
+                          ComplexExpression{"DictionaryEncodedList"_, {}, std::move(dynamics), {}};
                       return;
                     } else if constexpr(std::is_convertible_v<decltype(columnArray),
                                                               arrow::PrimitiveArray const&>) {
-                      using ElementType = const decltype(columnArray.Value(0));
+                      using ElementType = decltype(columnArray.Value(0)) const;
                       if constexpr(std::is_constructible_v<expressions::ExpressionSpanArgument,
                                                            boss::Span<ElementType>> &&
                                    std::is_constructible_v<boss::Span<ElementType>, ElementType*,

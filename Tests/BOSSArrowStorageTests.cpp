@@ -69,3 +69,32 @@ TEST_CASE("Create and Load TPCH's Nation", "[tpch]") {
   REQUIRE(boss::get<boss::ComplexExpression>(rewriteStrings).getDynamicArguments()[1] ==
           "Equal"_("N_NAME"_, 2));
 }
+
+TEST_CASE("Test string columns", "[strings]") {
+  boss::engines::arrow_storage::Engine engine;
+
+  REQUIRE(engine.evaluate("Set"_("UseArrowDictionaryEncoding"_, false)) == boss::Expression(true));
+
+  auto createResult = engine.evaluate(
+      "CreateTable"_("NATION"_, "N_NATIONKEY"_, "N_NAME"_, "N_REGIONKEY"_, "N_COMMENT"_));
+  REQUIRE(createResult == boss::Expression(true));
+
+  auto loadResult = engine.evaluate("Load"_("NATION"_, "../Tests/nation.tbl"));
+  REQUIRE(loadResult == boss::Expression(true));
+
+  auto result = engine.evaluate("NATION"_);
+  REQUIRE(boss::get<boss::ComplexExpression>(result).getHead() == "Table"_);
+
+  auto nameColumn = boss::get<boss::ComplexExpression>(result).getArguments()[1];
+  REQUIRE(boss::get<boss::ComplexExpression>(nameColumn) ==
+          "Column"_("N_NAME"_, "DictionaryEncodedList"_("List"_(0, 7, 16, 22, 28), "ALGERIA"
+                                                                                   "ARGENTINA"
+                                                                                   "BRAZIL"
+                                                                                   "CANADA")));
+
+  auto noRewriteStrings = engine.evaluate("Select"_(
+      "Project"_("NATION"_, "As"_("N_NAME"_, "N_NAME"_)), "StringContainsQ"_("N_NAME"_, "BRAZIL")));
+  INFO(noRewriteStrings);
+  REQUIRE(boss::get<boss::ComplexExpression>(noRewriteStrings).getDynamicArguments()[1] ==
+          "StringContainsQ"_("N_NAME"_, "BRAZIL"));
+}
