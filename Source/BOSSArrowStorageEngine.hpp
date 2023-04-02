@@ -28,18 +28,23 @@ public:
   boss::Expression evaluate(boss::Expression&& expr);
 
 private:
-  bool memoryMapped = true; // TODO: make it a modifiable parameter
+  struct {
+    bool loadToMemoryMappedFiles = true;
+    bool useArrowDictionaryEncoding = true;
+    int32_t arrowLoadingBlockSize = 1U << 30;
+  } properties;
+
   std::unordered_map<std::string, boss::ComplexExpression> tables;
   std::unordered_map<std::string, std::unique_ptr<arrow::DictionaryUnifier>> dictionaries;
 
   void load(Symbol const& tableSymbol, std::string const& filepath,
             unsigned long long maxRows = -1);
 
-  std::shared_ptr<arrow::RecordBatchReader> static loadFromCsvFile(
-      std::string const& filepath, std::vector<std::string> const& columnNames);
-  std::shared_ptr<arrow::RecordBatchReader> static loadFromCsvFile(
-      std::string const& filepath, std::vector<std::string> const& columnNames, char separator,
-      bool eolHasSeparator, bool hasHeader);
+  std::shared_ptr<arrow::RecordBatchReader>
+  loadFromCsvFile(std::string const& filepath, std::vector<std::string> const& columnNames);
+  std::shared_ptr<arrow::RecordBatchReader>
+  loadFromCsvFile(std::string const& filepath, std::vector<std::string> const& columnNames,
+                  char separator, bool eolHasSeparator, bool hasHeader);
 
   static void
   loadIntoMemoryMappedFile(std::shared_ptr<arrow::io::MemoryMappedFile>& memoryMappedFile,

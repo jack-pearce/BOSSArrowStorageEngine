@@ -406,8 +406,7 @@ Engine::loadFromCsvFile(std::string const& filepath, std::vector<std::string> co
 
   auto readOptions = arrow::csv::ReadOptions::Defaults();
 
-  static auto const shiftValueFor1GB = 30U;
-  readOptions.block_size = 1U << shiftValueFor1GB;
+  readOptions.block_size = properties.arrowLoadingBlockSize;
 
   if(!hasHeader) {
     readOptions.column_names = columnNames;
@@ -426,7 +425,7 @@ Engine::loadFromCsvFile(std::string const& filepath, std::vector<std::string> co
   auto convertOptions = arrow::csv::ConvertOptions::Defaults();
   convertOptions.include_columns = columnNames;
   convertOptions.include_missing_columns = true;
-  convertOptions.auto_dict_encode = true;
+  convertOptions.auto_dict_encode = properties.useArrowDictionaryEncoding;
 
   auto maybeCvsReader = arrow::csv::StreamingReader::Make(io_context, cvsInput, readOptions,
                                                           parseOptions, convertOptions);
@@ -455,8 +454,10 @@ void Engine::load(Symbol const& tableSymbol, std::string const& filepath,
 
   // check if the cached memory-mapped file exists
   std::shared_ptr<arrow::io::MemoryMappedFile> memoryMappedFile;
-  if(memoryMapped) { // only if we want to use a memory-mapped file
-    auto memoryMappedFilepath = filepath + ".cached";
+  if(properties.loadToMemoryMappedFiles) { // only if we want to use a memory-mapped file
+    auto memoryMappedFilepath =
+        filepath + "_" + std::to_string(properties.arrowLoadingBlockSize) +
+        (properties.useArrowDictionaryEncoding ? "_with_dict.cached" : ".cached");
     auto maybeMemoryMappedFile =
         arrow::io::MemoryMappedFile::Open(memoryMappedFilepath, arrow::io::FileMode::READWRITE);
     if(!maybeMemoryMappedFile.ok()) {
@@ -530,6 +531,26 @@ boss::Expression Engine::evaluate(boss::Expression&& expr) { // NOLINT
                 auto const& filepath = get<std::string>(args[1]);
                 load(table, filepath);
                 return true;
+              }
+              if(e.getHead() == "Set"_) {
+                auto const& propertyName = get<Symbol>(args[0]);
+                if(propertyName == "LoadToMemoryMappedFiles"_) {
+                  properties.loadToMemoryMappedFiles = get<bool>(args[1]);
+                  return true;
+                }
+                if(propertyName == "UseArrowDictionaryEncoding"_) {
+                  properties.useArrowDictionaryEncoding = get<bool>(args[1]);
+                  return true;
+                }
+                if(propertyName == "ArrowLoadingBlockSize"_) {
+                  int32_t blockSize = get<int64_t>(args[1]);
+                  if(blockSize <= 0) {
+                    throw std::runtime_error("block size must be positive and within int32 range");
+                  }
+                  properties.arrowLoadingBlockSize = blockSize;
+                  return true;
+                }
+                return false;
               }
               if(e.getHead() == "Equal"_ || e.getHead() == "StringContainsQ"_) {
                 if(std::holds_alternative<Symbol>(args[0]) &&
