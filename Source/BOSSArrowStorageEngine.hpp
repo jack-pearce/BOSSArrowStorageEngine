@@ -31,7 +31,7 @@ private:
   struct {
     bool loadToMemoryMappedFiles = true;
     bool useArrowDictionaryEncoding = true;
-    int32_t arrowLoadingBlockSize = 1U << 30;
+    int32_t arrowLoadingBlockSize = 1U << 30U; // 1GB // NOLINT
   } properties;
 
   std::unordered_map<std::string, boss::ComplexExpression> tables;
@@ -41,10 +41,10 @@ private:
             unsigned long long maxRows = -1);
 
   std::shared_ptr<arrow::RecordBatchReader>
-  loadFromCsvFile(std::string const& filepath, std::vector<std::string> const& columnNames);
+  loadFromCsvFile(std::string const& filepath, std::vector<std::string> const& columnNames) const;
   std::shared_ptr<arrow::RecordBatchReader>
   loadFromCsvFile(std::string const& filepath, std::vector<std::string> const& columnNames,
-                  char separator, bool eolHasSeparator, bool hasHeader);
+                  char separator, bool eolHasSeparator, bool hasHeader) const;
 
   static void
   loadIntoMemoryMappedFile(std::shared_ptr<arrow::io::MemoryMappedFile>& memoryMappedFile,

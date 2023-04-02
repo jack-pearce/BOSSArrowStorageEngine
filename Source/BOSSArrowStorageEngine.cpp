@@ -396,7 +396,8 @@ void Engine::loadIntoMemoryMappedFile(
 }
 
 std::shared_ptr<arrow::RecordBatchReader>
-Engine::loadFromCsvFile(std::string const& filepath, std::vector<std::string> const& columnNames) {
+Engine::loadFromCsvFile(std::string const& filepath,
+                        std::vector<std::string> const& columnNames) const {
   if(filepath.rfind(".tbl") != std::string::npos) {
     return loadFromCsvFile(filepath, columnNames, '|', true, false);
   }
@@ -408,7 +409,7 @@ Engine::loadFromCsvFile(std::string const& filepath, std::vector<std::string> co
 
 std::shared_ptr<arrow::RecordBatchReader>
 Engine::loadFromCsvFile(std::string const& filepath, std::vector<std::string> const& columnNames,
-                        char separator, bool eolHasSeparator, bool hasHeader) {
+                        char separator, bool eolHasSeparator, bool hasHeader) const {
   // load the original files
   auto const& io_context = arrow::io::default_io_context();
   auto maybeFileInput = arrow::io::ReadableFile::Open(filepath, io_context.pool());
@@ -570,19 +571,19 @@ boss::Expression Engine::evaluate(boss::Expression&& expr) { // NOLINT
                 if(std::holds_alternative<Symbol>(args[0]) &&
                    std::holds_alternative<std::string>(args[1])) {
                   auto const& column = get<Symbol>(args[0]);
-                  auto const& str = get<std::string>(args[1]);
-                  auto dummyDicBuilder = arrow::StringBuilder();
-                  auto appendStatus = dummyDicBuilder.Append(str);
-                  if(!appendStatus.ok()) {
-                    throw std::runtime_error(appendStatus.ToString());
-                  }
-                  std::shared_ptr<arrow::StringArray> dummyDictionaryPtr;
-                  auto finishStatus = dummyDicBuilder.Finish(&dummyDictionaryPtr);
-                  if(!finishStatus.ok()) {
-                    throw std::runtime_error(finishStatus.ToString());
-                  }
                   auto const& unifierPtr = dictionaries[column.getName()];
                   if(unifierPtr) {
+                    auto const& str = get<std::string>(args[1]);
+                    auto dummyDicBuilder = arrow::StringBuilder();
+                    auto appendStatus = dummyDicBuilder.Append(str);
+                    if(!appendStatus.ok()) {
+                      throw std::runtime_error(appendStatus.ToString());
+                    }
+                    std::shared_ptr<arrow::StringArray> dummyDictionaryPtr;
+                    auto finishStatus = dummyDicBuilder.Finish(&dummyDictionaryPtr);
+                    if(!finishStatus.ok()) {
+                      throw std::runtime_error(finishStatus.ToString());
+                    }
                     std::shared_ptr<arrow::Buffer> indices;
                     auto unifyStatus = unifierPtr->Unify(*dummyDictionaryPtr, &indices);
                     if(!unifyStatus.ok()) {
@@ -591,7 +592,7 @@ boss::Expression Engine::evaluate(boss::Expression&& expr) { // NOLINT
                     int64_t index = *reinterpret_cast<int32_t const*>(indices->data());
                     return "Equal"_(column, index);
                   }
-                  return std::move(e);
+                  return boss::ComplexExpression(e.getHead(), {}, std::move(args), {});
                 }
               }
               visitTransform(args, [this](auto&& arg) -> boss::Expression {
