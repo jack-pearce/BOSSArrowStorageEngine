@@ -30,8 +30,8 @@ public:
 private:
   struct {
     bool loadToMemoryMappedFiles = true;
-    bool useArrowDictionaryEncoding = true;
-    int32_t arrowLoadingBlockSize = 1U << 30U; // 1GB // NOLINT
+    bool useAutoDictionaryEncoding = true;
+    int32_t fileLoadingBlockSize = 1U << 30U; // 1GB // NOLINT
   } properties;
 
   std::unordered_map<std::string, boss::ComplexExpression> tables;

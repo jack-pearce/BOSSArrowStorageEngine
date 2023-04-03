@@ -421,7 +421,7 @@ Engine::loadFromCsvFile(std::string const& filepath, std::vector<std::string> co
 
   auto readOptions = arrow::csv::ReadOptions::Defaults();
 
-  readOptions.block_size = properties.arrowLoadingBlockSize;
+  readOptions.block_size = properties.fileLoadingBlockSize;
 
   if(!hasHeader) {
     readOptions.column_names = columnNames;
@@ -440,7 +440,7 @@ Engine::loadFromCsvFile(std::string const& filepath, std::vector<std::string> co
   auto convertOptions = arrow::csv::ConvertOptions::Defaults();
   convertOptions.include_columns = columnNames;
   convertOptions.include_missing_columns = true;
-  convertOptions.auto_dict_encode = properties.useArrowDictionaryEncoding;
+  convertOptions.auto_dict_encode = properties.useAutoDictionaryEncoding;
 
   auto maybeCvsReader = arrow::csv::StreamingReader::Make(io_context, cvsInput, readOptions,
                                                           parseOptions, convertOptions);
@@ -471,8 +471,8 @@ void Engine::load(Symbol const& tableSymbol, std::string const& filepath,
   std::shared_ptr<arrow::io::MemoryMappedFile> memoryMappedFile;
   if(properties.loadToMemoryMappedFiles) { // only if we want to use a memory-mapped file
     auto memoryMappedFilepath =
-        filepath + "_" + std::to_string(properties.arrowLoadingBlockSize) +
-        (properties.useArrowDictionaryEncoding ? "_with_dict.cached" : ".cached");
+        filepath + "_" + std::to_string(properties.fileLoadingBlockSize) +
+        (properties.useAutoDictionaryEncoding ? "_with_dict.cached" : ".cached");
     auto maybeMemoryMappedFile =
         arrow::io::MemoryMappedFile::Open(memoryMappedFilepath, arrow::io::FileMode::READWRITE);
     if(!maybeMemoryMappedFile.ok()) {
@@ -553,16 +553,16 @@ boss::Expression Engine::evaluate(boss::Expression&& expr) { // NOLINT
                   properties.loadToMemoryMappedFiles = get<bool>(args[1]);
                   return true;
                 }
-                if(propertyName == "UseArrowDictionaryEncoding"_) {
-                  properties.useArrowDictionaryEncoding = get<bool>(args[1]);
+                if(propertyName == "UseAutoDictionaryEncoding"_) {
+                  properties.useAutoDictionaryEncoding = get<bool>(args[1]);
                   return true;
                 }
-                if(propertyName == "ArrowLoadingBlockSize"_) {
-                  int32_t blockSize = get<int64_t>(args[1]);
-                  if(blockSize <= 0) {
+                if(propertyName == "FileLoadingBlockSize"_) {
+                  auto blockSize = get<int64_t>(args[1]);
+                  if(blockSize <= 0 || blockSize > std::numeric_limits<int32_t>::max()) {
                     throw std::runtime_error("block size must be positive and within int32 range");
                   }
-                  properties.arrowLoadingBlockSize = blockSize;
+                  properties.fileLoadingBlockSize = blockSize;
                   return true;
                 }
                 return false;
