@@ -157,7 +157,7 @@ std::shared_ptr<arrow::Int64Array> Engine::convertToInt64Array(int32_t const* sr
 // Dictionary -> Int64 (+ store separately the strings)
 std::shared_ptr<arrow::Int64Array>
 Engine::convertToInt64Array(arrow::DictionaryArray const& dictionaryArray,
-                            std::string const& dictionaryName) {
+                            Symbol const& dictionaryName) {
   auto const& dictionaryPtr = dictionaryArray.dictionary();
   // store the dictionary separately (as a single unified dictionary)
   auto& unifierPtr = dictionaries[dictionaryName];
@@ -214,84 +214,69 @@ void Engine::loadIntoColumns(Columns& columns, std::shared_ptr<arrow::RecordBatc
     // store the arrays as spans
     auto const& batchColumns = batch->columns();
     auto batchColumnIt = batchColumns.begin();
+    auto columnIt = std::make_move_iterator(columns.begin());
     std::transform(
-        std::make_move_iterator(columns.begin()), std::make_move_iterator(columns.end()),
-        columns.begin(), [&batchColumnIt, this](auto&& e) -> Expression {
-          auto arrowArrayPtr = *batchColumnIt++;
-          auto [head, statics, dynamics, spans] = std::move(get<ComplexExpression>(e)).decompose();
-          auto const& columnName = get<Symbol>(dynamics[0]).getName();
+        batchColumns.begin(), batchColumns.end(), columns.begin(),
+        [&columnIt, this](auto arrowArrayPtr) -> Expression {
+          auto [head, statics, dynamics, spans] =
+              std::move(get<ComplexExpression>(*columnIt++)).decompose();
+          auto const& columnName = get<Symbol>(dynamics[0]);
           auto dynArgsIt = std::next(dynamics.begin());
-          auto& columnData = *dynArgsIt;
-          columnData = visit(
-              [&arrowArrayPtr, &columnName, this](auto&& listExpr) -> Expression {
-                if constexpr(isComplexExpression<decltype(listExpr)>) {
-                  // prepare arrays (conversions to compatible types)
-                  if(arrowArrayPtr->type_id() == arrow::Type::DATE32) {
-                    arrowArrayPtr = convertToInt64Array(
-                        dynamic_cast<arrow::Date32Array const&>(*arrowArrayPtr).raw_values(),
-                        arrowArrayPtr->length());
-                  } else if(arrowArrayPtr->type_id() == arrow::Type::DICTIONARY) {
-                    arrowArrayPtr = convertToInt64Array(
-                        dynamic_cast<arrow::DictionaryArray const&>(*arrowArrayPtr),
-                        columnName); // store the dictionary's strings per column name
-                  }
-                  // convert to spans and store as complex expressions
-                  auto visitor = utilities::ArrowArrayVisitor([&arrowArrayPtr,
-                                                               &listExpr](auto const& columnArray) {
-                    if constexpr(std::is_convertible_v<decltype(columnArray),
-                                                       arrow::StringArray const&>) {
-                      // convert to span of offsets + buffer as string argument
-                      auto offsetsArrayPtr = convertToInt64Array(columnArray.raw_value_offsets(),
-                                                                 columnArray.length() + 1);
-                      auto [unused0, unused1, dynamics, unused2] = std::move(listExpr) // NOLINT
-                                                                       .decompose();
-                      if(dynamics.empty()) {
-                        dynamics.emplace_back("List"_());
-                        dynamics.emplace_back(std::string());
-                      }
-                      auto& encodedList = get<ComplexExpression>(dynamics[0]);
-                      auto [head, unused3, unused4, spans] = std::move(encodedList) // NOLINT
-                                                                 .decompose();
-                      spans.emplace_back(boss::Span<int64_t const>(
-                          offsetsArrayPtr->raw_values(), offsetsArrayPtr->length(),
-                          [stored = offsetsArrayPtr]() {}));
-                      encodedList = ComplexExpression{head, {}, {}, std::move(spans)};
-                      auto& buffer = get<std::string>(dynamics[1]);
-                      buffer += std::string(
-                          static_cast<arrow::util::string_view>(*columnArray.value_data()));
-                      listExpr =
-                          ComplexExpression{"DictionaryEncodedList"_, {}, std::move(dynamics), {}};
-                      return;
-                    } else if constexpr(std::is_convertible_v<decltype(columnArray),
-                                                              arrow::PrimitiveArray const&>) {
-                      using ElementType = decltype(columnArray.Value(0)) const;
-                      if constexpr(std::is_constructible_v<expressions::ExpressionSpanArgument,
-                                                           boss::Span<ElementType>> &&
-                                   std::is_constructible_v<boss::Span<ElementType>, ElementType*,
-                                                           int, std::function<void(void)>>) {
-                        // TODO: why listExpr is not always a r-value reference?
-                        auto [head, statics, dynamics, spans] = std::move(listExpr) // NOLINT
-                                                                    .decompose();
-                        spans.emplace_back(boss::Span<ElementType>(columnArray.raw_values(),
-                                                                   columnArray.length(),
-                                                                   [stored = arrowArrayPtr]() {}));
-                        listExpr = ComplexExpression{head, std::move(statics), std::move(dynamics),
-                                                     std::move(spans)};
-                        return;
-                      }
-                    }
-                    throw std::runtime_error("unsupported arrow array type");
-                  });
-                  auto status = arrow::VisitArrayInline(*arrowArrayPtr, &visitor);
-                  if(!status.ok()) {
-                    throw std::runtime_error("failed to visit arrow array: " + status.ToString());
-                  }
-                  return std::move(listExpr); // NOLINT(bugprone-move-forwarding-reference)
-                } else {
-                  throw std::runtime_error("column must be a complex expression");
-                }
-              },
-              std::move(columnData));
+          auto& columnData = get<boss::ComplexExpression>(*dynArgsIt);
+          // prepare arrays (conversions to compatible types)
+          if(arrowArrayPtr->type_id() == arrow::Type::DATE32) {
+            arrowArrayPtr = convertToInt64Array(
+                dynamic_cast<arrow::Date32Array const&>(*arrowArrayPtr).raw_values(),
+                arrowArrayPtr->length());
+          } else if(arrowArrayPtr->type_id() == arrow::Type::DICTIONARY) {
+            arrowArrayPtr =
+                convertToInt64Array(dynamic_cast<arrow::DictionaryArray const&>(*arrowArrayPtr),
+                                    columnName); // store the dictionary's strings per column name
+          }
+          // convert to spans and store as complex expressions
+          auto visitor = utilities::ArrowArrayVisitor([&arrowArrayPtr,
+                                                       &columnData](auto const& columnArray) {
+            if constexpr(std::is_convertible_v<decltype(columnArray), arrow::StringArray const&>) {
+              // convert to span of offsets + buffer as string argument
+              auto offsetsArrayPtr =
+                  convertToInt64Array(columnArray.raw_value_offsets(), columnArray.length() + 1);
+              auto [unused0, unused1, dynamics, unused2] = std::move(columnData).decompose();
+              if(dynamics.empty()) {
+                dynamics.emplace_back("List"_());
+                dynamics.emplace_back(std::string());
+              }
+              auto& encodedList = get<ComplexExpression>(dynamics[0]);
+              auto [head, unused3, unused4, spans] = std::move(encodedList).decompose();
+              spans.emplace_back(boss::Span<int64_t const>(offsetsArrayPtr->raw_values(),
+                                                           offsetsArrayPtr->length(),
+                                                           [stored = offsetsArrayPtr]() {}));
+              encodedList = ComplexExpression{head, {}, {}, std::move(spans)};
+              auto& buffer = get<std::string>(dynamics[1]);
+              buffer +=
+                  std::string(static_cast<arrow::util::string_view>(*columnArray.value_data()));
+              columnData = ComplexExpression{"DictionaryEncodedList"_, {}, std::move(dynamics), {}};
+              return;
+            } else if constexpr(std::is_convertible_v<decltype(columnArray),
+                                                      arrow::PrimitiveArray const&>) {
+              using ElementType = decltype(columnArray.Value(0)) const;
+              if constexpr(std::is_constructible_v<expressions::ExpressionSpanArgument,
+                                                   boss::Span<ElementType>> &&
+                           std::is_constructible_v<boss::Span<ElementType>, ElementType*, int,
+                                                   std::function<void(void)>>) {
+                auto [head, statics, dynamics, spans] = std::move(columnData).decompose();
+                spans.emplace_back(boss::Span<ElementType>(
+                    columnArray.raw_values(), columnArray.length(), [stored = arrowArrayPtr]() {}));
+                columnData = ComplexExpression{head, std::move(statics), std::move(dynamics),
+                                               std::move(spans)};
+                return;
+              }
+            }
+            throw std::runtime_error("unsupported arrow array type");
+          });
+          auto status = arrow::VisitArrayInline(*arrowArrayPtr, &visitor);
+          if(!status.ok()) {
+            throw std::runtime_error("failed to visit arrow array: " + status.ToString());
+          }
           return ComplexExpression{head, std::move(statics), std::move(dynamics), std::move(spans)};
         });
 
@@ -453,19 +438,21 @@ Engine::loadFromCsvFile(std::string const& filepath, std::vector<std::string> co
 
 void Engine::load(Symbol const& tableSymbol, std::string const& filepath,
                   unsigned long long maxRows) {
-
-  auto it = tables.find(tableSymbol.getName());
+  auto it = tables.find(tableSymbol);
   if(it == tables.end()) {
     throw std::runtime_error("cannot find table " + tableSymbol.getName() + " to load data into.");
   }
   auto& table = it->second;
+
   auto columns = table.getArguments();
   auto columnNames = std::vector<std::string>();
   columnNames.reserve(columns.size());
-  std::transform(columns.begin(), columns.end(), std::back_inserter(columnNames),
-                 [](auto&& column) {
-                   return get<Symbol>(get<ComplexExpression>(column).getArguments()[0]).getName();
-                 });
+  for(auto const& column : columns) {
+    if(get<ComplexExpression>(column).getHead() == "Column"_) {
+      columnNames.emplace_back(
+          get<Symbol>(get<ComplexExpression>(column).getArguments()[0]).getName());
+    }
+  }
 
   // check if the cached memory-mapped file exists
   std::shared_ptr<arrow::io::MemoryMappedFile> memoryMappedFile;
@@ -513,6 +500,145 @@ void Engine::load(Symbol const& tableSymbol, std::string const& filepath,
   loadIntoColumns(columns, memoryMappedFileReader, maxRows);
 }
 
+void Engine::rebuildIndexes(Symbol const& tableSymbol) {
+  auto foreignKeysIt = foreignKeys.find(tableSymbol);
+  if(foreignKeysIt == foreignKeys.end()) {
+    return; // no foreign keys; no indexes to update
+  }
+  auto const& foreignConstraints = foreignKeysIt->second;
+
+  std::unordered_map<Symbol, std::vector<Symbol>::const_iterator>
+      primaryKeysIterators; // to iterate the primary keys in the same order as the foreign keys
+
+  for(auto const& pairForeignTableAndKey : foreignConstraints) {
+    auto const& foreignTableSymbol = pairForeignTableAndKey.first;
+    auto const& foreignKey = pairForeignTableAndKey.second;
+    // get the next primary key matching the foreign key
+    auto const& foreignTablePrimaryKeys = primaryKeys[foreignTableSymbol];
+    auto& primaryKeyIt =
+        primaryKeysIterators.try_emplace(foreignTableSymbol, foreignTablePrimaryKeys.begin())
+            .first->second;
+    if(primaryKeyIt == foreignTablePrimaryKeys.end()) {
+      throw std::runtime_error("foreign key " + foreignKey.getName() +
+                               " not matching a primary key in table " +
+                               foreignTableSymbol.getName());
+    }
+    auto const& primaryKey = *primaryKeyIt++;
+    // get the foreign table
+    auto foreignTableIt = tables.find(foreignTableSymbol);
+    if(foreignTableIt == tables.end()) {
+      throw std::runtime_error("cannot find table " + foreignTableSymbol.getName() +
+                               " to rebuild indexes.");
+    }
+    auto& foreignTable = foreignTableIt->second;
+    auto primaryColumns = foreignTable.getArguments();
+    // get the column for the primary key
+    auto primaryColumnIt =
+        std::find_if(primaryColumns.begin(), primaryColumns.end(), [&primaryKey](auto const& e) {
+          return get<boss::ComplexExpression>(e).getHead() == "Column"_ &&
+                 get<Symbol>(get<boss::ComplexExpression>(e).getDynamicArguments()[0]) ==
+                     primaryKey;
+        });
+    if(primaryColumnIt == primaryColumns.end()) {
+      throw std::runtime_error("cannot find primary key " + primaryKey.getName() + " in table " +
+                               foreignTableSymbol.getName());
+    }
+    auto const& primaryColumn = get<boss::ComplexExpression>(*primaryColumnIt);
+    // get the columns from the table having FK constraints
+    auto it = tables.find(tableSymbol);
+    if(it == tables.end()) {
+      throw std::runtime_error("foreign keys: cannot find table " + tableSymbol.getName());
+    }
+    auto& table = it->second;
+    auto [tableHead, unused1, columns, unused2] = std::move(table).decompose();
+    // find if there is already an existing index, or create new one
+    auto indexColumnIt = std::find_if(columns.begin(), columns.end(), [&primaryKey](auto const& e) {
+      return get<boss::ComplexExpression>(e).getHead() == "Index"_ &&
+             get<Symbol>(get<boss::ComplexExpression>(e).getDynamicArguments()[0]) == primaryKey;
+    });
+    if(indexColumnIt == columns.end()) {
+      columns.emplace_back("Index"_(primaryKey, "List"_()));
+      indexColumnIt = std::prev(columns.end());
+    }
+    auto& indexColumn = get<boss::ComplexExpression>(*indexColumnIt);
+    // get the column for the foreign key
+    auto foreignColumnIt =
+        std::find_if(columns.begin(), columns.end(), [&foreignKey](auto const& e) {
+          return get<boss::ComplexExpression>(e).getHead() == "Column"_ &&
+                 get<Symbol>(get<boss::ComplexExpression>(e).getDynamicArguments()[0]) ==
+                     foreignKey;
+        });
+    if(foreignColumnIt == columns.end()) {
+      throw std::runtime_error("cannot find foreign key " + foreignKey.getName() + " in table " +
+                               tableSymbol.getName());
+    }
+    auto const& foreignColumn = get<boss::ComplexExpression>(*foreignColumnIt);
+    // build a hashmap for the primary key
+    std::unordered_map<int64_t, int64_t> primaryHash;
+    auto const& primaryColumnData =
+        get<boss::ComplexExpression>(primaryColumn.getDynamicArguments()[1]);
+    auto const& primaryColumnSpans = primaryColumnData.getSpanArguments();
+    auto index = 0;
+    for(auto const& span : primaryColumnSpans) {
+      std::visit(
+          [&primaryHash, &index, &foreignKey](auto const& typedSpan) {
+            if constexpr(std::is_same_v<std::decay_t<decltype(typedSpan)>, boss::Span<int64_t>> ||
+                         std::is_same_v<std::decay_t<decltype(typedSpan)>,
+                                        boss::Span<int64_t const>>) {
+              for(auto const& value : typedSpan) {
+                primaryHash[value] = index++;
+              }
+            } else {
+              throw std::runtime_error("foreign key type not supported for " +
+                                       foreignKey.getName());
+            }
+          },
+          span);
+    }
+    // build the index for the foreign key
+    auto const& foreignColumnData =
+        get<boss::ComplexExpression>(foreignColumn.getDynamicArguments()[1]);
+    auto foreignColumnDataArgs = foreignColumnData.getArguments();
+    boss::expressions::ExpressionSpanArguments newSpans;
+    for(auto const& span : foreignColumnData.getSpanArguments()) {
+      newSpans.emplace_back(visit(
+          [&primaryHash, &foreignKey](auto const& typedSpan) {
+            auto intBuilder = arrow::Int64Builder();
+            auto status = intBuilder.AppendEmptyValues(typedSpan.size());
+            if(!status.ok()) {
+              throw std::runtime_error(status.ToString());
+            }
+            if constexpr(std::is_same_v<std::decay_t<decltype(typedSpan)>, boss::Span<int64_t>> ||
+                         std::is_same_v<std::decay_t<decltype(typedSpan)>,
+                                        boss::Span<int64_t const>>) {
+              for(int64_t i = 0; i < typedSpan.size(); ++i) {
+                intBuilder[i] = primaryHash[typedSpan[i]];
+              }
+            } else {
+              throw std::runtime_error("foreign key type not supported for " +
+                                       foreignKey.getName());
+            }
+            auto int64arrayPtr = std::shared_ptr<arrow::Int64Array>();
+            auto finishStatus = intBuilder.Finish(&int64arrayPtr);
+            if(!finishStatus.ok()) {
+              throw std::runtime_error(finishStatus.ToString());
+            }
+            // convert the index to span
+            return boss::Span<int64_t const>(int64arrayPtr->raw_values(), int64arrayPtr->length(),
+                                             [stored = int64arrayPtr]() {});
+          },
+          span));
+      // build the index-expression
+      auto& columnData =
+          get<boss::ComplexExpression>(*std::next(indexColumn.getArguments().begin()));
+      auto [head, statics, dynamics, spans] = std::move(columnData).decompose();
+      columnData = boss::ComplexExpression{head, std::move(statics), std::move(dynamics),
+                                           std::move(newSpans)};
+    }
+    table = boss::ComplexExpression{std::move(tableHead), {}, std::move(columns), {}};
+  }
+}
+
 boss::Expression Engine::evaluate(boss::Expression&& expr) { // NOLINT
   try {
     return visit(
@@ -535,16 +661,43 @@ boss::Expression Engine::evaluate(boss::Expression&& expr) { // NOLINT
               }
               if(e.getHead() == "DropTable"_) {
                 auto const& table = get<Symbol>(args[0]);
-                auto it = tables.find(table.getName());
+                auto it = tables.find(table);
                 if(it != tables.end()) {
                   tables.erase(it);
                 }
+                rebuildIndexes(table);
+                return true;
+              }
+              if(e.getHead() == "AddConstraint"_) {
+                auto const& table = get<Symbol>(args[0]);
+                auto const& constraint = get<boss::ComplexExpression>(args[1]);
+                if(constraint.getHead() == "PrimaryKey"_) {
+                  for(auto const& arg : constraint.getArguments()) {
+                    auto const& attribute = get<Symbol>(arg);
+                    primaryKeys[table].emplace_back(attribute);
+                  }
+                } else if(constraint.getHead() == "ForeignKey"_) {
+                  auto constraintArgs = constraint.getArguments();
+                  auto it = constraintArgs.begin();
+                  auto const& foreignTable = get<Symbol>(*it++);
+                  if(primaryKeys[foreignTable].size() != constraintArgs.size() - 1) {
+                    throw std::runtime_error("Number of FKs does not match the number of PKs");
+                  }
+                  for(; it != constraintArgs.end(); ++it) {
+                    auto const& attribute = get<Symbol>(*it);
+                    foreignKeys[table].emplace_back(foreignTable, attribute);
+                  }
+                } else {
+                  throw std::runtime_error("unrecognized constraint");
+                }
+                rebuildIndexes(table);
                 return true;
               }
               if(e.getHead() == "Load"_) {
                 auto const& table = get<Symbol>(args[0]);
                 auto const& filepath = get<std::string>(args[1]);
                 load(table, filepath);
+                rebuildIndexes(table);
                 return true;
               }
               if(e.getHead() == "Set"_) {
@@ -571,7 +724,7 @@ boss::Expression Engine::evaluate(boss::Expression&& expr) { // NOLINT
                 if(std::holds_alternative<Symbol>(args[0]) &&
                    std::holds_alternative<std::string>(args[1])) {
                   auto const& column = get<Symbol>(args[0]);
-                  auto const& unifierPtr = dictionaries[column.getName()];
+                  auto const& unifierPtr = dictionaries[column];
                   if(unifierPtr) {
                     auto const& str = get<std::string>(args[1]);
                     auto dummyDicBuilder = arrow::StringBuilder();
@@ -606,7 +759,7 @@ boss::Expression Engine::evaluate(boss::Expression&& expr) { // NOLINT
               return boss::ComplexExpression(e.getHead(), {}, std::move(args), {});
             },
             [this](Symbol&& symbol) -> boss::Expression {
-              auto it = tables.find(symbol.getName());
+              auto it = tables.find(symbol);
               if(it == tables.end()) {
                 return std::move(symbol);
               }

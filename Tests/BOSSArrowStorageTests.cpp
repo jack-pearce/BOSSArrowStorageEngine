@@ -24,7 +24,7 @@ TEST_CASE("Empty Table", "[empty]") {
                                      "Greater"_("ColA"_, 10)));
 }
 
-TEST_CASE("Create and Load TPCH's Nation", "[tpch]") {
+TEST_CASE("Create a TPC-H table", "[tpch]") {
   boss::engines::arrow_storage::Engine engine;
 
   auto createResult = engine.evaluate(
@@ -40,7 +40,6 @@ TEST_CASE("Create and Load TPCH's Nation", "[tpch]") {
   REQUIRE(loadResult == boss::Expression(true));
 
   auto loadedResult = engine.evaluate("NATION"_);
-
   auto result = std::move(loadedResult); // check if the spans can be moved
   REQUIRE(boss::get<boss::ComplexExpression>(result).getHead() == "Table"_);
 
@@ -73,7 +72,7 @@ TEST_CASE("Create and Load TPCH's Nation", "[tpch]") {
 TEST_CASE("Test string columns", "[strings]") {
   boss::engines::arrow_storage::Engine engine;
 
-  REQUIRE(engine.evaluate("Set"_("UseArrowDictionaryEncoding"_, false)) == boss::Expression(true));
+  REQUIRE(engine.evaluate("Set"_("UseAutoDictionaryEncoding"_, false)) == boss::Expression(true));
 
   auto createResult = engine.evaluate(
       "CreateTable"_("NATION"_, "N_NATIONKEY"_, "N_NAME"_, "N_REGIONKEY"_, "N_COMMENT"_));
@@ -97,4 +96,49 @@ TEST_CASE("Test string columns", "[strings]") {
   INFO(noRewriteStrings);
   REQUIRE(boss::get<boss::ComplexExpression>(noRewriteStrings).getDynamicArguments()[1] ==
           "StringContainsQ"_("N_NAME"_, "BRAZIL"));
+}
+
+TEST_CASE("Test PKs and FKs", "[constraints]") {
+  boss::engines::arrow_storage::Engine engine;
+
+  auto createNationResult = engine.evaluate(
+      "CreateTable"_("NATION"_, "N_NATIONKEY"_, "N_NAME"_, "N_REGIONKEY"_, "N_COMMENT"_));
+  REQUIRE(createNationResult == boss::Expression(true));
+
+  auto createSupplierResult =
+      engine.evaluate("CreateTable"_("SUPPLIER"_, "S_SUPPKEY"_, "S_NAME"_, "S_ADDRESS"_,
+                                     "S_NATIONKEY"_, "S_PHONE"_, "S_ACCTBAL"_, "S_COMMENT"_));
+  REQUIRE(createSupplierResult == boss::Expression(true));
+
+  auto nationPKResult = engine.evaluate("AddConstraint"_("NATION"_, "PrimaryKey"_("N_NATIONKEY"_)));
+  REQUIRE(nationPKResult == boss::Expression(true));
+
+  auto supplierPKResult =
+      engine.evaluate("AddConstraint"_("SUPPLIER"_, "PrimaryKey"_("S_SUPPKEY"_)));
+  REQUIRE(supplierPKResult == boss::Expression(true));
+
+  auto nationFKResult =
+      engine.evaluate("AddConstraint"_("SUPPLIER"_, "ForeignKey"_("NATION"_, "S_NATIONKEY"_)));
+  REQUIRE(nationFKResult == boss::Expression(true));
+
+  auto emptyResult = engine.evaluate("SUPPLIER"_);
+  REQUIRE(emptyResult ==
+          "Table"_("Column"_("S_SUPPKEY"_, "List"_()), "Column"_("S_NAME"_, "List"_()),
+                   "Column"_("S_ADDRESS"_, "List"_()), "Column"_("S_NATIONKEY"_, "List"_()),
+                   "Column"_("S_PHONE"_, "List"_()), "Column"_("S_ACCTBAL"_, "List"_()),
+                   "Column"_("S_COMMENT"_, "List"_()), "Index"_("N_NATIONKEY"_, "List"_())));
+
+  auto loadNationResult = engine.evaluate("Load"_("NATION"_, "../Tests/nation.tbl"));
+  REQUIRE(loadNationResult == boss::Expression(true));
+
+  auto loadSupplierResult = engine.evaluate("Load"_("SUPPLIER"_, "../Tests/supplier.tbl"));
+  REQUIRE(loadSupplierResult == boss::Expression(true));
+
+  auto result = engine.evaluate("SUPPLIER"_);
+
+  INFO(result);
+
+  auto const& indexExpr = boss::get<boss::ComplexExpression>(
+      boss::get<boss::ComplexExpression>(result).getDynamicArguments().back());
+  REQUIRE(indexExpr == "Index"_("N_NATIONKEY"_, "List"_(0, 0, 3, 2, 2, 1, 2, 0, 1, 3)));
 }

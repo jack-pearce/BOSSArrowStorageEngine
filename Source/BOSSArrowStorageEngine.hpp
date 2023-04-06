@@ -34,8 +34,12 @@ private:
     int32_t fileLoadingBlockSize = 1U << 30U; // 1GB // NOLINT
   } properties;
 
-  std::unordered_map<std::string, boss::ComplexExpression> tables;
-  std::unordered_map<std::string, std::unique_ptr<arrow::DictionaryUnifier>> dictionaries;
+  std::unordered_map<Symbol, boss::ComplexExpression> tables;
+  std::unordered_map<Symbol, std::vector<Symbol>> primaryKeys;
+  std::unordered_map<Symbol, std::vector<std::pair<Symbol, Symbol>>> foreignKeys;
+  std::unordered_map<Symbol, std::unique_ptr<arrow::DictionaryUnifier>> dictionaries;
+
+  void rebuildIndexes(Symbol const& updatedTableSymbol);
 
   void load(Symbol const& tableSymbol, std::string const& filepath,
             unsigned long long maxRows = -1);
@@ -57,8 +61,7 @@ private:
   static std::shared_ptr<arrow::Int64Array> convertToInt64Array(int32_t const* srcData,
                                                                 int64_t size);
   std::shared_ptr<arrow::Int64Array>
-  convertToInt64Array(arrow::DictionaryArray const& dictionaryArray,
-                      std::string const& dictionaryName);
+  convertToInt64Array(arrow::DictionaryArray const& dictionaryArray, Symbol const& dictionaryName);
 };
 
 } // namespace boss::engines::arrow_storage
