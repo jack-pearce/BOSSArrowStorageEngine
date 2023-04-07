@@ -31,6 +31,7 @@ private:
   struct {
     bool loadToMemoryMappedFiles = true;
     bool useAutoDictionaryEncoding = true;
+    bool allStringColumnsAsIntegers = false;
     int32_t fileLoadingBlockSize = 1U << 30U; // 1GB // NOLINT
   } properties;
 

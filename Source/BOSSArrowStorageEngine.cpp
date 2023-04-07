@@ -234,23 +234,30 @@ void Engine::loadIntoColumns(Columns& columns, std::shared_ptr<arrow::RecordBatc
                                     columnName); // store the dictionary's strings per column name
           }
           // convert to spans and store as complex expressions
-          auto visitor = utilities::ArrowArrayVisitor([&arrowArrayPtr,
+          auto visitor = utilities::ArrowArrayVisitor([this, &arrowArrayPtr,
                                                        &columnData](auto const& columnArray) {
             if constexpr(std::is_convertible_v<decltype(columnArray), arrow::StringArray const&>) {
               // convert to span of offsets + buffer as string argument
               auto offsetsArrayPtr =
                   convertToInt64Array(columnArray.raw_value_offsets(), columnArray.length() + 1);
-              auto [unused0, unused1, dynamics, unused2] = std::move(columnData).decompose();
+              auto [unused0, unused1, dynamics, spans] = std::move(columnData).decompose();
+              if(properties.allStringColumnsAsIntegers) {
+                spans.emplace_back(boss::Span<int64_t const>(offsetsArrayPtr->raw_values(),
+                                                             offsetsArrayPtr->length(),
+                                                             [stored = offsetsArrayPtr]() {}));
+                columnData = ComplexExpression{"List"_, {}, std::move(dynamics), std::move(spans)};
+                return;
+              }
               if(dynamics.empty()) {
                 dynamics.emplace_back("List"_());
                 dynamics.emplace_back(std::string());
               }
               auto& encodedList = get<ComplexExpression>(dynamics[0]);
-              auto [head, unused3, unused4, spans] = std::move(encodedList).decompose();
-              spans.emplace_back(boss::Span<int64_t const>(offsetsArrayPtr->raw_values(),
-                                                           offsetsArrayPtr->length(),
-                                                           [stored = offsetsArrayPtr]() {}));
-              encodedList = ComplexExpression{head, {}, {}, std::move(spans)};
+              auto [listHead, unused3, unused4, listSpans] = std::move(encodedList).decompose();
+              listSpans.emplace_back(boss::Span<int64_t const>(offsetsArrayPtr->raw_values(),
+                                                               offsetsArrayPtr->length(),
+                                                               [stored = offsetsArrayPtr]() {}));
+              encodedList = ComplexExpression{listHead, {}, {}, std::move(listSpans)};
               auto& buffer = get<std::string>(dynamics[1]);
               buffer +=
                   std::string(static_cast<arrow::util::string_view>(*columnArray.value_data()));
@@ -707,6 +714,10 @@ boss::Expression Engine::evaluate(boss::Expression&& expr) { // NOLINT
                 }
                 if(propertyName == "UseAutoDictionaryEncoding"_) {
                   properties.useAutoDictionaryEncoding = get<bool>(args[1]);
+                  return true;
+                }
+                if(propertyName == "AllStringColumnsAsIntegers"_) {
+                  properties.allStringColumnsAsIntegers = get<bool>(args[1]);
                   return true;
                 }
                 if(propertyName == "FileLoadingBlockSize"_) {
