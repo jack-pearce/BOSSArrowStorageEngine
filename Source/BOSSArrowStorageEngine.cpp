@@ -605,7 +605,6 @@ void Engine::rebuildIndexes(Symbol const& tableSymbol) {
     // build the index for the foreign key
     auto const& foreignColumnData =
         get<boss::ComplexExpression>(foreignColumn.getDynamicArguments()[1]);
-    auto foreignColumnDataArgs = foreignColumnData.getArguments();
     boss::expressions::ExpressionSpanArguments newSpans;
     for(auto const& span : foreignColumnData.getSpanArguments()) {
       newSpans.emplace_back(visit(
@@ -635,13 +634,10 @@ void Engine::rebuildIndexes(Symbol const& tableSymbol) {
                                              [stored = int64arrayPtr]() {});
           },
           span));
-      // build the index-expression
-      auto& columnData =
-          get<boss::ComplexExpression>(*std::next(indexColumn.getArguments().begin()));
-      auto [head, statics, dynamics, spans] = std::move(columnData).decompose();
-      columnData = boss::ComplexExpression{head, std::move(statics), std::move(dynamics),
-                                           std::move(newSpans)};
     }
+    auto& columnData = get<boss::ComplexExpression>(*std::next(indexColumn.getArguments().begin()));
+    auto [head, unused, dynamics, spans] = std::move(columnData).decompose();
+    columnData = boss::ComplexExpression{head, {}, std::move(dynamics), std::move(newSpans)};
     table = boss::ComplexExpression{std::move(tableHead), {}, std::move(columns), {}};
   }
 }
