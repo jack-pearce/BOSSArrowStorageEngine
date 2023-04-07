@@ -661,10 +661,9 @@ boss::Expression Engine::evaluate(boss::Expression&& expr) { // NOLINT
               }
               if(e.getHead() == "DropTable"_) {
                 auto const& table = get<Symbol>(args[0]);
-                auto it = tables.find(table);
-                if(it != tables.end()) {
-                  tables.erase(it);
-                }
+                tables.erase(table);
+                primaryKeys.erase(table);
+                foreignKeys.erase(table);
                 rebuildIndexes(table);
                 return true;
               }
