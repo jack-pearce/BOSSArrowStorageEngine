@@ -647,13 +647,13 @@ boss::Expression Engine::evaluate(boss::Expression&& expr) { // NOLINT
     return visit(
         boss::utilities::overload(
             [this](ComplexExpression&& e) -> boss::Expression {
-              boss::ExpressionArguments args = e.getArguments();
-              if(e.getHead() == "CreateTable"_) {
+              auto [head, unused_, dynamics, spans] = std::move(e).decompose();
+              if(head == "CreateTable"_) {
                 ExpressionArguments columns;
-                columns.reserve(args.size() - 1);
-                auto it = std::make_move_iterator(args.begin());
+                columns.reserve(dynamics.size() - 1);
+                auto it = std::make_move_iterator(dynamics.begin());
                 auto tableSymbol = get<Symbol>(std::move(*it));
-                std::transform(++it, std::make_move_iterator(args.end()),
+                std::transform(++it, std::make_move_iterator(dynamics.end()),
                                std::back_inserter(columns), [](auto&& arg) {
                                  return "Column"_(get<Symbol>(std::forward<decltype(arg)>(arg)),
                                                   "List"_());
@@ -662,17 +662,17 @@ boss::Expression Engine::evaluate(boss::Expression&& expr) { // NOLINT
                                               ComplexExpression("Table"_, std::move(columns))));
                 return true;
               }
-              if(e.getHead() == "DropTable"_) {
-                auto const& table = get<Symbol>(args[0]);
+              if(head == "DropTable"_) {
+                auto const& table = get<Symbol>(dynamics[0]);
                 tables.erase(table);
                 primaryKeys.erase(table);
                 foreignKeys.erase(table);
                 rebuildIndexes(table);
                 return true;
               }
-              if(e.getHead() == "AddConstraint"_) {
-                auto const& table = get<Symbol>(args[0]);
-                auto const& constraint = get<boss::ComplexExpression>(args[1]);
+              if(head == "AddConstraint"_) {
+                auto const& table = get<Symbol>(dynamics[0]);
+                auto const& constraint = get<boss::ComplexExpression>(dynamics[1]);
                 if(constraint.getHead() == "PrimaryKey"_) {
                   for(auto const& arg : constraint.getArguments()) {
                     auto const& attribute = get<Symbol>(arg);
@@ -695,29 +695,29 @@ boss::Expression Engine::evaluate(boss::Expression&& expr) { // NOLINT
                 rebuildIndexes(table);
                 return true;
               }
-              if(e.getHead() == "Load"_) {
-                auto const& table = get<Symbol>(args[0]);
-                auto const& filepath = get<std::string>(args[1]);
+              if(head == "Load"_) {
+                auto const& table = get<Symbol>(dynamics[0]);
+                auto const& filepath = get<std::string>(dynamics[1]);
                 load(table, filepath);
                 rebuildIndexes(table);
                 return true;
               }
-              if(e.getHead() == "Set"_) {
-                auto const& propertyName = get<Symbol>(args[0]);
+              if(head == "Set"_) {
+                auto const& propertyName = get<Symbol>(dynamics[0]);
                 if(propertyName == "LoadToMemoryMappedFiles"_) {
-                  properties.loadToMemoryMappedFiles = get<bool>(args[1]);
+                  properties.loadToMemoryMappedFiles = get<bool>(dynamics[1]);
                   return true;
                 }
                 if(propertyName == "UseAutoDictionaryEncoding"_) {
-                  properties.useAutoDictionaryEncoding = get<bool>(args[1]);
+                  properties.useAutoDictionaryEncoding = get<bool>(dynamics[1]);
                   return true;
                 }
                 if(propertyName == "AllStringColumnsAsIntegers"_) {
-                  properties.allStringColumnsAsIntegers = get<bool>(args[1]);
+                  properties.allStringColumnsAsIntegers = get<bool>(dynamics[1]);
                   return true;
                 }
                 if(propertyName == "FileLoadingBlockSize"_) {
-                  auto blockSize = get<int64_t>(args[1]);
+                  auto blockSize = get<int64_t>(dynamics[1]);
                   if(blockSize <= 0 || blockSize > std::numeric_limits<int32_t>::max()) {
                     throw std::runtime_error("block size must be positive and within int32 range");
                   }
@@ -726,13 +726,13 @@ boss::Expression Engine::evaluate(boss::Expression&& expr) { // NOLINT
                 }
                 return false;
               }
-              if(e.getHead() == "Equal"_ || e.getHead() == "StringContainsQ"_) {
-                if(std::holds_alternative<Symbol>(args[0]) &&
-                   std::holds_alternative<std::string>(args[1])) {
-                  auto const& column = get<Symbol>(args[0]);
+              if(head == "Equal"_ || head == "StringContainsQ"_) {
+                if(std::holds_alternative<Symbol>(dynamics[0]) &&
+                   std::holds_alternative<std::string>(dynamics[1])) {
+                  auto const& column = get<Symbol>(dynamics[0]);
                   auto const& unifierPtr = dictionaries[column];
                   if(unifierPtr) {
-                    auto const& str = get<std::string>(args[1]);
+                    auto const& str = get<std::string>(dynamics[1]);
                     auto dummyDicBuilder = arrow::StringBuilder();
                     auto appendStatus = dummyDicBuilder.Append(str);
                     if(!appendStatus.ok()) {
@@ -751,18 +751,16 @@ boss::Expression Engine::evaluate(boss::Expression&& expr) { // NOLINT
                     int64_t index = *reinterpret_cast<int32_t const*>(indices->data());
                     return "Equal"_(column, index);
                   }
-                  return boss::ComplexExpression(e.getHead(), {}, std::move(args), {});
+                  return boss::ComplexExpression(std::move(head), {}, std::move(dynamics),
+                                                 std::move(spans));
                 }
               }
-              visitTransform(args, [this](auto&& arg) -> boss::Expression {
-                if constexpr(isComplexExpression<decltype(arg)> &&
-                             std::is_lvalue_reference_v<decltype(arg)>) {
-                  return evaluate(arg.clone());
-                } else {
-                  return evaluate(std::forward<decltype(arg)>(arg));
-                }
-              });
-              return boss::ComplexExpression(e.getHead(), {}, std::move(args), {});
+              std::transform(
+                  std::make_move_iterator(dynamics.begin()),
+                  std::make_move_iterator(dynamics.end()), dynamics.begin(),
+                  [this](auto&& arg) { return evaluate(std::forward<decltype(arg)>(arg)); });
+              return boss::ComplexExpression(std::move(head), {}, std::move(dynamics),
+                                             std::move(spans));
             },
             [this](Symbol&& symbol) -> boss::Expression {
               auto it = tables.find(symbol);
@@ -776,7 +774,7 @@ boss::Expression Engine::evaluate(boss::Expression&& expr) { // NOLINT
   } catch(std::exception const& e) {
     boss::ExpressionArguments args;
     args.reserve(2);
-    args.emplace_back(expr.clone());
+    args.emplace_back(std::move(expr));
     args.emplace_back(std::string{e.what()});
     return boss::ComplexExpression{"ErrorWhenEvaluatingExpression"_, std::move(args)};
   }
