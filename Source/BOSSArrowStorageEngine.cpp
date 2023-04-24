@@ -724,7 +724,8 @@ boss::Expression Engine::evaluate(boss::Expression&& expr) { // NOLINT
                   properties.fileLoadingBlockSize = blockSize;
                   return true;
                 }
-                return false;
+                return boss::ComplexExpression(std::move(head), {}, std::move(dynamics),
+                                               std::move(spans));
               }
               if(head == "Equal"_ || head == "StringContainsQ"_) {
                 if(std::holds_alternative<Symbol>(dynamics[0]) &&
