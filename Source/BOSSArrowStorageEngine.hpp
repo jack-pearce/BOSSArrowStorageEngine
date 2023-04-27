@@ -59,10 +59,8 @@ private:
   void loadIntoColumns(Columns& columns, std::shared_ptr<arrow::RecordBatchReader>& reader,
                        unsigned long long maxRows);
 
-  static std::shared_ptr<arrow::Int64Array> convertToInt64Array(int32_t const* srcData,
-                                                                int64_t size);
-  std::shared_ptr<arrow::Int64Array>
-  convertToInt64Array(arrow::DictionaryArray const& dictionaryArray, Symbol const& dictionaryName);
+  std::shared_ptr<arrow::Int32Array>
+  convertToInt32Array(arrow::DictionaryArray const& dictionaryArray, Symbol const& dictionaryName);
 };
 
 } // namespace boss::engines::arrow_storage

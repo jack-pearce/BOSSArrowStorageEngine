@@ -140,5 +140,6 @@ TEST_CASE("Test PKs and FKs", "[constraints]") {
 
   auto const& indexExpr = boss::get<boss::ComplexExpression>(
       boss::get<boss::ComplexExpression>(result).getDynamicArguments().back());
-  REQUIRE(indexExpr == "Index"_("N_NATIONKEY"_, "List"_(0, 0, 3, 2, 2, 1, 2, 0, 1, 3)));
+  REQUIRE(indexExpr ==
+          "Index"_("N_NATIONKEY"_, "List"_(0LL, 0LL, 3LL, 2LL, 2LL, 1LL, 2LL, 0LL, 1LL, 3LL)));
 }

@@ -135,28 +135,9 @@ private:
 };
 } // namespace utilities
 
-// Int32 -> Int64
-std::shared_ptr<arrow::Int64Array> Engine::convertToInt64Array(int32_t const* srcData,
-                                                               int64_t size) {
-  auto intBuilder = arrow::Int64Builder();
-  auto status = intBuilder.AppendEmptyValues(size);
-  if(!status.ok()) {
-    throw std::runtime_error(status.ToString());
-  }
-  for(int64_t i = 0; i < size; ++i) {
-    intBuilder[i] = srcData[i];
-  }
-  auto int64arrayPtr = std::shared_ptr<arrow::Int64Array>();
-  auto finishStatus = intBuilder.Finish(&int64arrayPtr);
-  if(!finishStatus.ok()) {
-    throw std::runtime_error(finishStatus.ToString());
-  }
-  return int64arrayPtr;
-}
-
-// Dictionary -> Int64 (+ store separately the strings)
-std::shared_ptr<arrow::Int64Array>
-Engine::convertToInt64Array(arrow::DictionaryArray const& dictionaryArray,
+// Dictionary -> Int32 (store separately the strings)
+std::shared_ptr<arrow::Int32Array>
+Engine::convertToInt32Array(arrow::DictionaryArray const& dictionaryArray,
                             Symbol const& dictionaryName) {
   auto const& dictionaryPtr = dictionaryArray.dictionary();
   // store the dictionary separately (as a single unified dictionary)
@@ -173,11 +154,11 @@ Engine::convertToInt64Array(arrow::DictionaryArray const& dictionaryArray,
   if(!unifyStatus.ok()) {
     throw std::runtime_error(unifyStatus.ToString());
   }
-  // transpose indices (to unified dictionary) and convert to int64_t
+  // transpose indices to unified dictionary
   auto const& indices = *dictionaryArray.indices();
   auto const* srcArrayData = dynamic_cast<arrow::Int32Array const&>(indices).raw_values();
   auto transposeArray = arrow::Int32Array(dictionaryPtr->length(), transposeBuffer);
-  auto intBuilder = arrow::Int64Builder();
+  auto intBuilder = arrow::Int32Builder();
   auto appendStatus = intBuilder.AppendEmptyValues(dictionaryArray.length());
   if(!appendStatus.ok()) {
     throw std::runtime_error(appendStatus.ToString());
@@ -186,12 +167,12 @@ Engine::convertToInt64Array(arrow::DictionaryArray const& dictionaryArray,
   for(int64_t i = 0; i < intBuilder.length(); ++i) {
     intBuilder[i] = transposeMap[srcArrayData[i]];
   }
-  auto int64arrayPtr = std::shared_ptr<arrow::Int64Array>();
-  auto finishStatus = intBuilder.Finish(&int64arrayPtr);
+  auto int32arrayPtr = std::shared_ptr<arrow::Int32Array>();
+  auto finishStatus = intBuilder.Finish(&int32arrayPtr);
   if(!finishStatus.ok()) {
     throw std::runtime_error(finishStatus.ToString());
   }
-  return int64arrayPtr;
+  return int32arrayPtr;
 }
 
 template <typename Columns>
@@ -224,13 +205,9 @@ void Engine::loadIntoColumns(Columns& columns, std::shared_ptr<arrow::RecordBatc
           auto dynArgsIt = std::next(dynamics.begin());
           auto& columnData = get<boss::ComplexExpression>(*dynArgsIt);
           // prepare arrays (conversions to compatible types)
-          if(arrowArrayPtr->type_id() == arrow::Type::DATE32) {
-            arrowArrayPtr = convertToInt64Array(
-                dynamic_cast<arrow::Date32Array const&>(*arrowArrayPtr).raw_values(),
-                arrowArrayPtr->length());
-          } else if(arrowArrayPtr->type_id() == arrow::Type::DICTIONARY) {
+          if(arrowArrayPtr->type_id() == arrow::Type::DICTIONARY) {
             arrowArrayPtr =
-                convertToInt64Array(dynamic_cast<arrow::DictionaryArray const&>(*arrowArrayPtr),
+                convertToInt32Array(dynamic_cast<arrow::DictionaryArray const&>(*arrowArrayPtr),
                                     columnName); // store the dictionary's strings per column name
           }
           // convert to spans and store as complex expressions
@@ -238,13 +215,13 @@ void Engine::loadIntoColumns(Columns& columns, std::shared_ptr<arrow::RecordBatc
                                                        &columnData](auto const& columnArray) {
             if constexpr(std::is_convertible_v<decltype(columnArray), arrow::StringArray const&>) {
               // convert to span of offsets + buffer as string argument
-              auto offsetsArrayPtr =
-                  convertToInt64Array(columnArray.raw_value_offsets(), columnArray.length() + 1);
+              using OffsetType = std::decay_t<decltype(columnArray.raw_value_offsets()[0])> const;
+              auto newOffsetSpan =
+                  boss::Span<OffsetType>(columnArray.raw_value_offsets(), columnArray.length() + 1,
+                                         [stored = arrowArrayPtr]() {});
               auto [unused0, unused1, dynamics, spans] = std::move(columnData).decompose();
               if(properties.allStringColumnsAsIntegers) {
-                spans.emplace_back(boss::Span<int64_t const>(offsetsArrayPtr->raw_values(),
-                                                             offsetsArrayPtr->length(),
-                                                             [stored = offsetsArrayPtr]() {}));
+                spans.emplace_back(std::move(newOffsetSpan));
                 columnData = ComplexExpression{"List"_, {}, std::move(dynamics), std::move(spans)};
                 return;
               }
@@ -254,9 +231,7 @@ void Engine::loadIntoColumns(Columns& columns, std::shared_ptr<arrow::RecordBatc
               }
               auto& encodedList = get<ComplexExpression>(dynamics[0]);
               auto [listHead, unused3, unused4, listSpans] = std::move(encodedList).decompose();
-              listSpans.emplace_back(boss::Span<int64_t const>(offsetsArrayPtr->raw_values(),
-                                                               offsetsArrayPtr->length(),
-                                                               [stored = offsetsArrayPtr]() {}));
+              listSpans.emplace_back(std::move(newOffsetSpan));
               encodedList = ComplexExpression{listHead, {}, {}, std::move(listSpans)};
               auto& buffer = get<std::string>(dynamics[1]);
               buffer +=
@@ -265,7 +240,7 @@ void Engine::loadIntoColumns(Columns& columns, std::shared_ptr<arrow::RecordBatc
               return;
             } else if constexpr(std::is_convertible_v<decltype(columnArray),
                                                       arrow::PrimitiveArray const&>) {
-              using ElementType = decltype(columnArray.Value(0)) const;
+              using ElementType = std::decay_t<decltype(columnArray.Value(0))> const;
               if constexpr(std::is_constructible_v<expressions::ExpressionSpanArgument,
                                                    boss::Span<ElementType>> &&
                            std::is_constructible_v<boss::Span<ElementType>, ElementType*, int,
@@ -717,7 +692,9 @@ boss::Expression Engine::evaluate(boss::Expression&& expr) { // NOLINT
                   return true;
                 }
                 if(propertyName == "FileLoadingBlockSize"_) {
-                  auto blockSize = get<int64_t>(dynamics[1]);
+                  int64_t blockSize = holds_alternative<int64_t>(dynamics[1])
+                                          ? get<int64_t>(dynamics[1])
+                                          : get<int32_t>(dynamics[1]);
                   if(blockSize <= 0 || blockSize > std::numeric_limits<int32_t>::max()) {
                     throw std::runtime_error("block size must be positive and within int32 range");
                   }
@@ -749,7 +726,7 @@ boss::Expression Engine::evaluate(boss::Expression&& expr) { // NOLINT
                     if(!unifyStatus.ok()) {
                       throw std::runtime_error(unifyStatus.ToString());
                     }
-                    int64_t index = *reinterpret_cast<int32_t const*>(indices->data());
+                    auto index = *reinterpret_cast<int32_t const*>(indices->data());
                     return "Equal"_(column, index);
                   }
                   return boss::ComplexExpression(std::move(head), {}, std::move(dynamics),
