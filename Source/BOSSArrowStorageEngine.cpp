@@ -592,13 +592,14 @@ void Engine::rebuildIndexes(Symbol const& tableSymbol) {
       newSpans.emplace_back(visit(
           [&primaryHash,
            &foreignKey](auto const& typedSpan) -> boss::expressions::ExpressionSpanArgument {
-            auto buildIndex = [&primaryHash, &typedSpan](auto&& intBuilder, auto& outputArrayPtr) {
-              auto status = intBuilder.AppendEmptyValues(typedSpan.size());
+            auto buildIndex = [&primaryHash](auto&& intBuilder, auto& outputArrayPtr,
+                                             auto const& foreignSpan) {
+              auto status = intBuilder.AppendEmptyValues(foreignSpan.size());
               if(!status.ok()) {
                 throw std::runtime_error(status.ToString());
               }
-              for(int64_t i = 0; i < typedSpan.size(); ++i) {
-                intBuilder[i] = primaryHash[typedSpan[i]];
+              for(int64_t i = 0; i < foreignSpan.size(); ++i) {
+                intBuilder[i] = primaryHash[static_cast<int64_t>(foreignSpan[i])];
               }
               auto finishStatus = intBuilder.Finish(&outputArrayPtr);
               if(!finishStatus.ok()) {
@@ -608,8 +609,8 @@ void Engine::rebuildIndexes(Symbol const& tableSymbol) {
             if constexpr(std::is_same_v<std::decay_t<decltype(typedSpan)>, boss::Span<int64_t>> ||
                          std::is_same_v<std::decay_t<decltype(typedSpan)>,
                                         boss::Span<int64_t const>>) {
-              auto int64arrayPtr = std::shared_ptr<arrow::Int64Array>();				
-              buildIndex(arrow::Int64Builder(), int64arrayPtr);
+              auto int64arrayPtr = std::shared_ptr<arrow::Int64Array>();
+              buildIndex(arrow::Int64Builder(), int64arrayPtr, typedSpan);
               return boss::Span<int64_t const>(int64arrayPtr->raw_values(), int64arrayPtr->length(),
                                                [stored = int64arrayPtr]() {});
             } else if constexpr(std::is_same_v<std::decay_t<decltype(typedSpan)>,
@@ -617,7 +618,7 @@ void Engine::rebuildIndexes(Symbol const& tableSymbol) {
                                 std::is_same_v<std::decay_t<decltype(typedSpan)>,
                                                boss::Span<int32_t const>>) {
               auto int32arrayPtr = std::shared_ptr<arrow::Int32Array>();
-              buildIndex(arrow::Int32Builder(), int32arrayPtr);
+              buildIndex(arrow::Int32Builder(), int32arrayPtr, typedSpan);
               return boss::Span<int32_t const>(int32arrayPtr->raw_values(), int32arrayPtr->length(),
                                                [stored = int32arrayPtr]() {});
             } else {
@@ -684,12 +685,11 @@ boss::Expression Engine::evaluate(boss::Expression&& expr) { // NOLINT
                 for(; it != std::make_move_iterator(dynamics.end()); ++it) {
                   auto arg = std::move(*it);
                   if(holds_alternative<ComplexExpression>(arg)) {
-                    auto asExpr = get<ComplexExpression>(std::move(arg));
-                    if(asExpr.getHead() == "As"_) {
+                    if(get<ComplexExpression>(arg).getHead() == "As"_) {
                       auto const& columnSymbol =
                           get<Symbol>(get<ComplexExpression>(columns.back()).getArguments()[0]);
                       columnTypesPerTable[tableSymbol][columnSymbol.getName()] =
-                          toArrowType(std::move(asExpr).getArguments()[0]);
+                          toArrowType(get<ComplexExpression>(std::move(arg)).getArguments()[0]);
                       continue;
                     }
                   }
