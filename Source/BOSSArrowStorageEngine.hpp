@@ -35,7 +35,10 @@ private:
     int32_t fileLoadingBlockSize = 1U << 30U; // 1GB // NOLINT
   } properties;
 
+  using ColumnTypes = std::unordered_map<std::string, std::shared_ptr<arrow::DataType>>;
+
   std::unordered_map<Symbol, boss::ComplexExpression> tables;
+  std::unordered_map<Symbol, ColumnTypes> columnTypesPerTable;
   std::unordered_map<Symbol, std::vector<Symbol>> primaryKeys;
   std::unordered_map<Symbol, std::vector<std::pair<Symbol, Symbol>>> foreignKeys;
   std::unordered_map<Symbol, std::unique_ptr<arrow::DictionaryUnifier>> dictionaries;
@@ -46,10 +49,12 @@ private:
             unsigned long long maxRows = -1);
 
   std::shared_ptr<arrow::RecordBatchReader>
-  loadFromCsvFile(std::string const& filepath, std::vector<std::string> const& columnNames) const;
+  loadFromCsvFile(std::string const& filepath, std::vector<std::string> const& columnNames,
+                  ColumnTypes const& columnTypes) const;
   std::shared_ptr<arrow::RecordBatchReader>
   loadFromCsvFile(std::string const& filepath, std::vector<std::string> const& columnNames,
-                  char separator, bool eolHasSeparator, bool hasHeader) const;
+                  ColumnTypes const& columnTypes, char separator, bool eolHasSeparator,
+                  bool hasHeader) const;
 
   static void
   loadIntoMemoryMappedFile(std::shared_ptr<arrow::io::MemoryMappedFile>& memoryMappedFile,

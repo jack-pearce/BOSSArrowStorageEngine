@@ -363,20 +363,21 @@ void Engine::loadIntoMemoryMappedFile(
 }
 
 std::shared_ptr<arrow::RecordBatchReader>
-Engine::loadFromCsvFile(std::string const& filepath,
-                        std::vector<std::string> const& columnNames) const {
+Engine::loadFromCsvFile(std::string const& filepath, std::vector<std::string> const& columnNames,
+                        ColumnTypes const& columnTypes) const {
   if(filepath.rfind(".tbl") != std::string::npos) {
-    return loadFromCsvFile(filepath, columnNames, '|', true, false);
+    return loadFromCsvFile(filepath, columnNames, columnTypes, '|', true, false);
   }
   if(filepath.rfind(".csv") != std::string::npos) {
-    return loadFromCsvFile(filepath, columnNames, ',', false, true);
+    return loadFromCsvFile(filepath, columnNames, columnTypes, ',', false, true);
   }
   throw std::runtime_error("unsupported file format for " + filepath);
 }
 
 std::shared_ptr<arrow::RecordBatchReader>
 Engine::loadFromCsvFile(std::string const& filepath, std::vector<std::string> const& columnNames,
-                        char separator, bool eolHasSeparator, bool hasHeader) const {
+                        ColumnTypes const& columnTypes, char separator, bool eolHasSeparator,
+                        bool hasHeader) const {
   // load the original files
   auto const& io_context = arrow::io::default_io_context();
   auto maybeFileInput = arrow::io::ReadableFile::Open(filepath, io_context.pool());
@@ -406,6 +407,7 @@ Engine::loadFromCsvFile(std::string const& filepath, std::vector<std::string> co
 
   auto convertOptions = arrow::csv::ConvertOptions::Defaults();
   convertOptions.include_columns = columnNames;
+  convertOptions.column_types = columnTypes;
   convertOptions.include_missing_columns = true;
   convertOptions.auto_dict_encode = properties.useAutoDictionaryEncoding;
 
@@ -436,6 +438,8 @@ void Engine::load(Symbol const& tableSymbol, std::string const& filepath,
     }
   }
 
+  auto const& columnTypes = columnTypesPerTable[tableSymbol];
+
   // check if the cached memory-mapped file exists
   std::shared_ptr<arrow::io::MemoryMappedFile> memoryMappedFile;
   if(properties.loadToMemoryMappedFiles) { // only if we want to use a memory-mapped file
@@ -453,7 +457,7 @@ void Engine::load(Symbol const& tableSymbol, std::string const& filepath,
 
   if(!memoryMappedFile || memoryMappedFile->GetSize() == 0) {
     // load from the csv file first
-    auto csvReader = loadFromCsvFile(filepath, columnNames);
+    auto csvReader = loadFromCsvFile(filepath, columnNames, columnTypes);
     // then write it to the memory-mapped file (so then we can open it)
     if(memoryMappedFile) {
       if constexpr(VERBOSE_LOADING) {
@@ -617,6 +621,42 @@ void Engine::rebuildIndexes(Symbol const& tableSymbol) {
   }
 }
 
+auto toArrowType(Expression&& typeExpr) {
+  return std::visit(boss::utilities::overload(
+                        [](Symbol&& type) -> std::shared_ptr<arrow::DataType> {
+                          if(type == "INTEGER"_ || type == "int32"_) {
+                            return arrow::int32();
+                          }
+                          if(type == "BIGINT"_ || type == "int64"_) {
+                            return arrow::int64();
+                          }
+                          if(type == "DOUBLE"_ || type == "float64"_) {
+                            return arrow::float64();
+                          }
+                          if(type == "BOOLEAN"_ || type == "bool"_) {
+                            return arrow::boolean();
+                          }
+                          if(type == "DATE"_ || type == "date32"_) {
+                            return arrow::date32();
+                          }
+                          throw std::runtime_error("unsupported type " + type.getName());
+                        },
+                        [](ComplexExpression&& type) -> std::shared_ptr<arrow::DataType> {
+                          if(type.getHead() == "CHAR"_) {
+                            return arrow::utf8(); // TODO: handle fixed size arrays
+                          }
+                          if(type.getHead() == "VARCHAR"_) {
+                            return arrow::utf8();
+                          }
+                          throw std::runtime_error("unsupported type " + type.getHead().getName());
+                        },
+                        [](auto&& /*other*/) -> std::shared_ptr<arrow::DataType> {
+                          throw std::runtime_error(
+                              "column type must be passed as a symbol or a complex expression");
+                        }),
+                    std::move(typeExpr));
+}
+
 boss::Expression Engine::evaluate(boss::Expression&& expr) { // NOLINT
   try {
     return visit(
@@ -627,12 +667,21 @@ boss::Expression Engine::evaluate(boss::Expression&& expr) { // NOLINT
                 ExpressionArguments columns;
                 columns.reserve(dynamics.size() - 1);
                 auto it = std::make_move_iterator(dynamics.begin());
-                auto tableSymbol = get<Symbol>(std::move(*it));
-                std::transform(++it, std::make_move_iterator(dynamics.end()),
-                               std::back_inserter(columns), [](auto&& arg) {
-                                 return "Column"_(get<Symbol>(std::forward<decltype(arg)>(arg)),
-                                                  "List"_());
-                               });
+                auto tableSymbol = get<Symbol>(std::move(*it++));
+                for(; it != std::make_move_iterator(dynamics.end()); ++it) {
+                  auto arg = std::move(*it);
+                  if(holds_alternative<ComplexExpression>(arg)) {
+                    auto asExpr = get<ComplexExpression>(std::move(arg));
+                    if(asExpr.getHead() == "As"_) {
+                      auto const& columnSymbol =
+                          get<Symbol>(get<ComplexExpression>(columns.back()).getArguments()[0]);
+                      columnTypesPerTable[tableSymbol][columnSymbol.getName()] =
+                          toArrowType(std::move(asExpr).getArguments()[0]);
+                      continue;
+                    }
+                  }
+                  columns.emplace_back("Column"_(get<Symbol>(std::move(arg)), "List"_()));
+                }
                 tables.emplace(std::make_pair(std::move(tableSymbol).getName(),
                                               ComplexExpression("Table"_, std::move(columns))));
                 return true;

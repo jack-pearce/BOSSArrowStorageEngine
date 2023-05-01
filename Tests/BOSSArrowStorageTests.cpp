@@ -98,6 +98,40 @@ TEST_CASE("Test string columns", "[strings]") {
           "StringContainsQ"_("N_NAME"_, "BRAZIL"));
 }
 
+TEST_CASE("Test column type specification", "[columnTypes]") {
+  boss::engines::arrow_storage::Engine engine;
+
+  REQUIRE(engine.evaluate("Set"_("LoadToMemoryMappedFiles"_, false)) == boss::Expression(true));
+
+  boss::Symbol nationKeyType = GENERATE("BIGINT"_, "INTEGER"_);
+  boss::Symbol regionKeyType = GENERATE("BIGINT"_, "DOUBLE"_);
+
+  auto createResult =
+      engine.evaluate("CreateTable"_("NATION"_, "N_NATIONKEY"_, "As"_(nationKeyType), "N_NAME"_,
+                                     "N_REGIONKEY"_, "As"_(regionKeyType), "N_COMMENT"_));
+  REQUIRE(createResult == boss::Expression(true));
+
+  auto loadResult = engine.evaluate("Load"_("NATION"_, "../Tests/nation.tbl"));
+  REQUIRE(loadResult == boss::Expression(true));
+
+  auto result = engine.evaluate("NATION"_);
+  REQUIRE(boss::get<boss::ComplexExpression>(result).getArguments().size() == 4);
+
+  auto nationKeyColumn = boss::get<boss::ComplexExpression>(result).getArguments()[0];
+  REQUIRE(boss::get<boss::ComplexExpression>(nationKeyColumn) ==
+          "Column"_("N_NATIONKEY"_,
+                    (nationKeyType == "BIGINT"_
+                         ? boss::ComplexExpression("List"_(1LL, 2LL, 3LL, 4LL)) // NOLINT
+                         : boss::ComplexExpression("List"_(1, 2, 3, 4)))));     // NOLINT
+
+  auto regionKeyColumn = boss::get<boss::ComplexExpression>(result).getArguments()[2];
+  REQUIRE(boss::get<boss::ComplexExpression>(regionKeyColumn) ==
+          "Column"_("N_REGIONKEY"_,
+                    (regionKeyType == "BIGINT"_
+                         ? boss::ComplexExpression("List"_(0LL, 1LL, 1LL, 1LL))     // NOLINT
+                         : boss::ComplexExpression("List"_(0.0, 1.0, 1.0, 1.0))))); // NOLINT
+}
+
 TEST_CASE("Test PKs and FKs", "[constraints]") {
   boss::engines::arrow_storage::Engine engine;
 
