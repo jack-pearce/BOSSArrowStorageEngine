@@ -564,13 +564,16 @@ void Engine::rebuildIndexes(Symbol const& tableSymbol) {
     auto const& primaryColumnData =
         get<boss::ComplexExpression>(primaryColumn.getDynamicArguments()[1]);
     auto const& primaryColumnSpans = primaryColumnData.getSpanArguments();
-    auto index = 0;
+    auto index = 0LL;
     for(auto const& span : primaryColumnSpans) {
       std::visit(
           [&primaryHash, &index, &foreignKey](auto const& typedSpan) {
             if constexpr(std::is_same_v<std::decay_t<decltype(typedSpan)>, boss::Span<int64_t>> ||
                          std::is_same_v<std::decay_t<decltype(typedSpan)>,
-                                        boss::Span<int64_t const>>) {
+                                        boss::Span<int64_t const>> ||
+                         std::is_same_v<std::decay_t<decltype(typedSpan)>, boss::Span<int32_t>> ||
+                         std::is_same_v<std::decay_t<decltype(typedSpan)>,
+                                        boss::Span<int32_t const>>) {
               for(auto const& value : typedSpan) {
                 primaryHash[value] = index++;
               }
@@ -587,30 +590,40 @@ void Engine::rebuildIndexes(Symbol const& tableSymbol) {
     boss::expressions::ExpressionSpanArguments newSpans;
     for(auto const& span : foreignColumnData.getSpanArguments()) {
       newSpans.emplace_back(visit(
-          [&primaryHash, &foreignKey](auto const& typedSpan) {
-            auto intBuilder = arrow::Int64Builder();
-            auto status = intBuilder.AppendEmptyValues(typedSpan.size());
-            if(!status.ok()) {
-              throw std::runtime_error(status.ToString());
-            }
-            if constexpr(std::is_same_v<std::decay_t<decltype(typedSpan)>, boss::Span<int64_t>> ||
-                         std::is_same_v<std::decay_t<decltype(typedSpan)>,
-                                        boss::Span<int64_t const>>) {
+          [&primaryHash,
+           &foreignKey](auto const& typedSpan) -> boss::expressions::ExpressionSpanArgument {
+            auto buildIndex = [&primaryHash, &typedSpan](auto&& intBuilder, auto& outputArrayPtr) {
+              auto status = intBuilder.AppendEmptyValues(typedSpan.size());
+              if(!status.ok()) {
+                throw std::runtime_error(status.ToString());
+              }
               for(int64_t i = 0; i < typedSpan.size(); ++i) {
                 intBuilder[i] = primaryHash[typedSpan[i]];
               }
+              auto finishStatus = intBuilder.Finish(&outputArrayPtr);
+              if(!finishStatus.ok()) {
+                throw std::runtime_error(finishStatus.ToString());
+              }
+            };
+            if constexpr(std::is_same_v<std::decay_t<decltype(typedSpan)>, boss::Span<int64_t>> ||
+                         std::is_same_v<std::decay_t<decltype(typedSpan)>,
+                                        boss::Span<int64_t const>>) {
+              auto int64arrayPtr = std::shared_ptr<arrow::Int64Array>();				
+              buildIndex(arrow::Int64Builder(), int64arrayPtr);
+              return boss::Span<int64_t const>(int64arrayPtr->raw_values(), int64arrayPtr->length(),
+                                               [stored = int64arrayPtr]() {});
+            } else if constexpr(std::is_same_v<std::decay_t<decltype(typedSpan)>,
+                                               boss::Span<int32_t>> ||
+                                std::is_same_v<std::decay_t<decltype(typedSpan)>,
+                                               boss::Span<int32_t const>>) {
+              auto int32arrayPtr = std::shared_ptr<arrow::Int32Array>();
+              buildIndex(arrow::Int32Builder(), int32arrayPtr);
+              return boss::Span<int32_t const>(int32arrayPtr->raw_values(), int32arrayPtr->length(),
+                                               [stored = int32arrayPtr]() {});
             } else {
               throw std::runtime_error("foreign key type not supported for " +
                                        foreignKey.getName());
             }
-            auto int64arrayPtr = std::shared_ptr<arrow::Int64Array>();
-            auto finishStatus = intBuilder.Finish(&int64arrayPtr);
-            if(!finishStatus.ok()) {
-              throw std::runtime_error(finishStatus.ToString());
-            }
-            // convert the index to span
-            return boss::Span<int64_t const>(int64arrayPtr->raw_values(), int64arrayPtr->length(),
-                                             [stored = int64arrayPtr]() {});
           },
           span));
     }

@@ -135,13 +135,18 @@ TEST_CASE("Test column type specification", "[columnTypes]") {
 TEST_CASE("Test PKs and FKs", "[constraints]") {
   boss::engines::arrow_storage::Engine engine;
 
-  auto createNationResult = engine.evaluate(
-      "CreateTable"_("NATION"_, "N_NATIONKEY"_, "N_NAME"_, "N_REGIONKEY"_, "N_COMMENT"_));
+  REQUIRE(engine.evaluate("Set"_("LoadToMemoryMappedFiles"_, false)) == boss::Expression(true));
+
+  boss::Symbol primaryAndForeignKeyType = GENERATE("BIGINT"_, "INTEGER"_);
+
+  auto createNationResult =
+      engine.evaluate("CreateTable"_("NATION"_, "N_NATIONKEY"_, "As"_(primaryAndForeignKeyType),
+                                     "N_NAME"_, "N_REGIONKEY"_, "N_COMMENT"_));
   REQUIRE(createNationResult == boss::Expression(true));
 
-  auto createSupplierResult =
-      engine.evaluate("CreateTable"_("SUPPLIER"_, "S_SUPPKEY"_, "S_NAME"_, "S_ADDRESS"_,
-                                     "S_NATIONKEY"_, "S_PHONE"_, "S_ACCTBAL"_, "S_COMMENT"_));
+  auto createSupplierResult = engine.evaluate(
+      "CreateTable"_("SUPPLIER"_, "S_SUPPKEY"_, "S_NAME"_, "S_ADDRESS"_, "S_NATIONKEY"_,
+                     "As"_(primaryAndForeignKeyType), "S_PHONE"_, "S_ACCTBAL"_, "S_COMMENT"_));
   REQUIRE(createSupplierResult == boss::Expression(true));
 
   auto nationPKResult = engine.evaluate("AddConstraint"_("NATION"_, "PrimaryKey"_("N_NATIONKEY"_)));
@@ -175,5 +180,9 @@ TEST_CASE("Test PKs and FKs", "[constraints]") {
   auto const& indexExpr = boss::get<boss::ComplexExpression>(
       boss::get<boss::ComplexExpression>(result).getDynamicArguments().back());
   REQUIRE(indexExpr ==
-          "Index"_("N_NATIONKEY"_, "List"_(0LL, 0LL, 3LL, 2LL, 2LL, 1LL, 2LL, 0LL, 1LL, 3LL)));
+          "Index"_("N_NATIONKEY"_,
+                   (primaryAndForeignKeyType == "BIGINT"_
+                        ? boss::ComplexExpression(
+                              "List"_(0LL, 0LL, 3LL, 2LL, 2LL, 1LL, 2LL, 0LL, 1LL, 3LL))
+                        : boss::ComplexExpression("List"_(0, 0, 3, 2, 2, 1, 2, 0, 1, 3)))));
 }
