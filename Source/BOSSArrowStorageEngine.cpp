@@ -560,11 +560,11 @@ void Engine::rebuildIndexes(Symbol const& tableSymbol) {
     }
     auto const& foreignColumn = get<boss::ComplexExpression>(*foreignColumnIt);
     // build a hashmap for the primary key
-    std::unordered_map<int64_t, int64_t> primaryHash;
+    std::unordered_map<int64_t, int32_t> primaryHash;
     auto const& primaryColumnData =
         get<boss::ComplexExpression>(primaryColumn.getDynamicArguments()[1]);
     auto const& primaryColumnSpans = primaryColumnData.getSpanArguments();
-    auto index = 0LL;
+    int32_t index = 0;
     for(auto const& span : primaryColumnSpans) {
       std::visit(
           [&primaryHash, &index, &foreignKey](auto const& typedSpan) {
@@ -608,15 +608,10 @@ void Engine::rebuildIndexes(Symbol const& tableSymbol) {
             };
             if constexpr(std::is_same_v<std::decay_t<decltype(typedSpan)>, boss::Span<int64_t>> ||
                          std::is_same_v<std::decay_t<decltype(typedSpan)>,
-                                        boss::Span<int64_t const>>) {
-              auto int64arrayPtr = std::shared_ptr<arrow::Int64Array>();
-              buildIndex(arrow::Int64Builder(), int64arrayPtr, typedSpan);
-              return boss::Span<int64_t const>(int64arrayPtr->raw_values(), int64arrayPtr->length(),
-                                               [stored = int64arrayPtr]() {});
-            } else if constexpr(std::is_same_v<std::decay_t<decltype(typedSpan)>,
-                                               boss::Span<int32_t>> ||
-                                std::is_same_v<std::decay_t<decltype(typedSpan)>,
-                                               boss::Span<int32_t const>>) {
+                                        boss::Span<int64_t const>> ||
+                         std::is_same_v<std::decay_t<decltype(typedSpan)>, boss::Span<int32_t>> ||
+                         std::is_same_v<std::decay_t<decltype(typedSpan)>,
+                                        boss::Span<int32_t const>>) {
               auto int32arrayPtr = std::shared_ptr<arrow::Int32Array>();
               buildIndex(arrow::Int32Builder(), int32arrayPtr, typedSpan);
               return boss::Span<int32_t const>(int32arrayPtr->raw_values(), int32arrayPtr->length(),
