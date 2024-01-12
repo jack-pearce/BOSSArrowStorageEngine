@@ -23,6 +23,9 @@
 #include <chrono>
 #include <iostream>
 
+#define IMPLEMENT_STRINGS // Velox parallel_support_new_table_format branch does not support
+                          // dictionaryEncoding
+
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -201,8 +204,8 @@ void Engine::loadIntoColumns(Columns& columns, std::shared_ptr<arrow::RecordBatc
         [&columnIt, this](auto arrowArrayPtr) -> Expression {
           auto [head, statics, dynamics, spans] =
               std::move(get<ComplexExpression>(*columnIt++)).decompose();
-          auto const& columnName = get<Symbol>(dynamics[0]);
-          auto dynArgsIt = std::next(dynamics.begin());
+          auto const& columnName = head;
+          auto dynArgsIt = dynamics.begin();
           auto& columnData = get<boss::ComplexExpression>(*dynArgsIt);
           // prepare arrays (conversions to compatible types)
           if(arrowArrayPtr->type_id() == arrow::Type::DICTIONARY) {
@@ -214,6 +217,7 @@ void Engine::loadIntoColumns(Columns& columns, std::shared_ptr<arrow::RecordBatc
           auto visitor = utilities::ArrowArrayVisitor([this, &arrowArrayPtr,
                                                        &columnData](auto const& columnArray) {
             if constexpr(std::is_convertible_v<decltype(columnArray), arrow::StringArray const&>) {
+#ifdef IMPLEMENT_STRINGS
               // convert to span of offsets + buffer as string argument
               using OffsetType = std::decay_t<decltype(columnArray.raw_value_offsets()[0])> const;
               auto newOffsetSpan =
@@ -238,6 +242,15 @@ void Engine::loadIntoColumns(Columns& columns, std::shared_ptr<arrow::RecordBatc
                   std::string(static_cast<arrow::util::string_view>(*columnArray.value_data()));
               columnData = ComplexExpression{"DictionaryEncodedList"_, {}, std::move(dynamics), {}};
               return;
+#else
+              // simply set string columns as integer columns with arbitrary values
+              auto [head, statics, dynamics, spans] = std::move(columnData) // NOLINT
+                                                          .decompose();
+              spans.emplace_back(boss::Span<int64_t>(std::vector<int64_t>(columnArray.length())));
+              columnData = ComplexExpression{head, std::move(statics), std::move(dynamics),
+                                             std::move(spans)};
+              return;
+#endif
             } else if constexpr(std::is_convertible_v<decltype(columnArray),
                                                       arrow::PrimitiveArray const&>) {
               using ElementType = std::decay_t<decltype(columnArray.Value(0))> const;
@@ -432,9 +445,8 @@ void Engine::load(Symbol const& tableSymbol, std::string const& filepath,
   auto columnNames = std::vector<std::string>();
   columnNames.reserve(columns.size());
   for(auto const& column : columns) {
-    if(get<ComplexExpression>(column).getHead() == "Column"_) {
-      columnNames.emplace_back(
-          get<Symbol>(get<ComplexExpression>(column).getArguments()[0]).getName());
+    if(get<ComplexExpression>(column).getHead() != "Index"_) {
+      columnNames.emplace_back(get<ComplexExpression>(column).getHead().getName());
     }
   }
 
@@ -521,9 +533,7 @@ void Engine::rebuildIndexes(Symbol const& tableSymbol) {
     // get the column for the primary key
     auto primaryColumnIt =
         std::find_if(primaryColumns.begin(), primaryColumns.end(), [&primaryKey](auto const& e) {
-          return get<boss::ComplexExpression>(e).getHead() == "Column"_ &&
-                 get<Symbol>(get<boss::ComplexExpression>(e).getDynamicArguments()[0]) ==
-                     primaryKey;
+          return get<boss::ComplexExpression>(e).getHead() == primaryKey;
         });
     if(primaryColumnIt == primaryColumns.end()) {
       throw std::runtime_error("cannot find primary key " + primaryKey.getName() + " in table " +
@@ -550,9 +560,7 @@ void Engine::rebuildIndexes(Symbol const& tableSymbol) {
     // get the column for the foreign key
     auto foreignColumnIt =
         std::find_if(columns.begin(), columns.end(), [&foreignKey](auto const& e) {
-          return get<boss::ComplexExpression>(e).getHead() == "Column"_ &&
-                 get<Symbol>(get<boss::ComplexExpression>(e).getDynamicArguments()[0]) ==
-                     foreignKey;
+          return get<boss::ComplexExpression>(e).getHead() == foreignKey;
         });
     if(foreignColumnIt == columns.end()) {
       throw std::runtime_error("cannot find foreign key " + foreignKey.getName() + " in table " +
@@ -562,7 +570,7 @@ void Engine::rebuildIndexes(Symbol const& tableSymbol) {
     // build a hashmap for the primary key
     std::unordered_map<int64_t, int32_t> primaryHash;
     auto const& primaryColumnData =
-        get<boss::ComplexExpression>(primaryColumn.getDynamicArguments()[1]);
+        get<boss::ComplexExpression>(primaryColumn.getDynamicArguments()[0]);
     auto const& primaryColumnSpans = primaryColumnData.getSpanArguments();
     int32_t index = 0;
     for(auto const& span : primaryColumnSpans) {
@@ -586,7 +594,7 @@ void Engine::rebuildIndexes(Symbol const& tableSymbol) {
     }
     // build the index for the foreign key
     auto const& foreignColumnData =
-        get<boss::ComplexExpression>(foreignColumn.getDynamicArguments()[1]);
+        get<boss::ComplexExpression>(foreignColumn.getDynamicArguments()[0]);
     boss::expressions::ExpressionSpanArguments newSpans;
     for(auto const& span : foreignColumnData.getSpanArguments()) {
       newSpans.emplace_back(visit(
@@ -666,6 +674,14 @@ auto toArrowType(Expression&& typeExpr) {
                     std::move(typeExpr));
 }
 
+void Engine::loadDataTable(Symbol const& tableSymbol, boss::ComplexExpression&& dataTable) {
+  auto it = tables.find(tableSymbol);
+  if(it == tables.end()) {
+    throw std::runtime_error("cannot find table " + tableSymbol.getName() + " to load data into.");
+  }
+  it->second = ComplexExpression("Table"_, std::move(dataTable).getArguments());
+}
+
 boss::Expression Engine::evaluate(boss::Expression&& expr) { // NOLINT
   try {
     return visit(
@@ -681,14 +697,15 @@ boss::Expression Engine::evaluate(boss::Expression&& expr) { // NOLINT
                   auto arg = std::move(*it);
                   if(holds_alternative<ComplexExpression>(arg)) {
                     if(get<ComplexExpression>(arg).getHead() == "As"_) {
-                      auto const& columnSymbol =
-                          get<Symbol>(get<ComplexExpression>(columns.back()).getArguments()[0]);
+                      auto const& columnSymbol = get<ComplexExpression>(columns.back()).getHead();
                       columnTypesPerTable[tableSymbol][columnSymbol.getName()] =
                           toArrowType(get<ComplexExpression>(std::move(arg)).getArguments()[0]);
                       continue;
                     }
                   }
-                  columns.emplace_back("Column"_(get<Symbol>(std::move(arg)), "List"_()));
+                  auto emptyList = ExpressionArguments(ComplexExpression("List"_, {}, {}, {}));
+                  columns.push_back(ComplexExpression(get<Symbol>(std::forward<decltype(arg)>(arg)),
+                                                      std::move(emptyList)));
                 }
                 tables.emplace(std::make_pair(std::move(tableSymbol).getName(),
                                               ComplexExpression("Table"_, std::move(columns))));
@@ -731,6 +748,13 @@ boss::Expression Engine::evaluate(boss::Expression&& expr) { // NOLINT
                 auto const& table = get<Symbol>(dynamics[0]);
                 auto const& filepath = get<std::string>(dynamics[1]);
                 load(table, filepath);
+                rebuildIndexes(table);
+                return true;
+              }
+              if(head == "LoadDataTable"_) {
+                auto const& table = get<Symbol>(dynamics[0]);
+                auto& data = get<boss::ComplexExpression>(dynamics[1]);
+                loadDataTable(table, std::move(data));
                 rebuildIndexes(table);
                 return true;
               }

@@ -11,15 +11,14 @@ TEST_CASE("Empty Table", "[empty]") {
   REQUIRE(result == boss::Expression(true));
 
   auto emptyResult = engine.evaluate("DummyTable"_);
-  REQUIRE(emptyResult == "Table"_("Column"_("ColA"_, "List"_()), "Column"_("ColB"_, "List"_()),
-                                  "Column"_("ColC"_, "List"_())));
+  REQUIRE(emptyResult == "Table"_("ColA"_("List"_()), "ColB"_("List"_()), "ColC"_("List"_())));
 
   auto rewriteResult = engine.evaluate(
       "Select"_("Project"_("DummyTable"_, "As"_("ColA"_, "ColA"_, "ColB"_, "ColB"_)),
                 "Greater"_("ColA"_, 10))); // NOLINT
-  REQUIRE(rewriteResult == "Select"_("Project"_("Table"_("Column"_("ColA"_, "List"_()),
-                                                         "Column"_("ColB"_, "List"_()),
-                                                         "Column"_("ColC"_, "List"_())),
+  REQUIRE(rewriteResult == "Select"_("Project"_("Table"_("ColA"_("List"_()),
+                                                         "ColB"_("List"_()),
+                                                         "ColC"_("List"_())),
                                                 "As"_("ColA"_, "ColA"_, "ColB"_, "ColB"_)),
                                      "Greater"_("ColA"_, 10)));
 }
@@ -33,8 +32,8 @@ TEST_CASE("Create a TPC-H table", "[tpch]") {
 
   auto emptyResult = engine.evaluate("NATION"_);
   REQUIRE(emptyResult ==
-          "Table"_("Column"_("N_NATIONKEY"_, "List"_()), "Column"_("N_NAME"_, "List"_()),
-                   "Column"_("N_REGIONKEY"_, "List"_()), "Column"_("N_COMMENT"_, "List"_())));
+          "Table"_("N_NATIONKEY"_("List"_()), "N_NAME"_("List"_()),
+                   "N_REGIONKEY"_("List"_()), "N_COMMENT"_("List"_())));
 
   auto loadResult = engine.evaluate("Load"_("NATION"_, "../Tests/nation.tbl"));
   REQUIRE(loadResult == boss::Expression(true));
@@ -45,19 +44,29 @@ TEST_CASE("Create a TPC-H table", "[tpch]") {
 
   INFO(result);
 
+  REQUIRE(boss::get<boss::ComplexExpression>(
+              boss::get<boss::ComplexExpression>(result).getArguments()[0])
+              .getHead() == "N_NATIONKEY"_);
+  REQUIRE(boss::get<boss::ComplexExpression>(
+              boss::get<boss::ComplexExpression>(result).getArguments()[1])
+              .getHead() == "N_NAME"_);
+  REQUIRE(boss::get<boss::ComplexExpression>(
+              boss::get<boss::ComplexExpression>(result).getArguments()[2])
+              .getHead() == "N_REGIONKEY"_);
+  REQUIRE(boss::get<boss::ComplexExpression>(
+              boss::get<boss::ComplexExpression>(result).getArguments()[3])
+              .getHead() == "N_COMMENT"_);
+
   for(int i = 0; i < 4; ++i) {
-    REQUIRE(boss::get<boss::ComplexExpression>(
-                boss::get<boss::ComplexExpression>(result).getArguments()[i])
-                .getHead() == "Column"_);
     REQUIRE(boss::get<boss::ComplexExpression>(
                 boss::get<boss::ComplexExpression>(
                     boss::get<boss::ComplexExpression>(result).getArguments()[i])
-                    .getArguments()[1])
+                    .getArguments()[0])
                 .getHead() == "List"_);
     REQUIRE(boss::get<boss::ComplexExpression>(
                 boss::get<boss::ComplexExpression>(
                     boss::get<boss::ComplexExpression>(result).getArguments()[i])
-                    .getArguments()[1])
+                    .getArguments()[0])
                 .getArguments()
                 .size() > 1);
   }
@@ -86,10 +95,10 @@ TEST_CASE("Test string columns", "[strings]") {
 
   auto nameColumn = boss::get<boss::ComplexExpression>(result).getArguments()[1];
   REQUIRE(boss::get<boss::ComplexExpression>(nameColumn) ==
-          "Column"_("N_NAME"_, "DictionaryEncodedList"_("List"_(0, 7, 16, 22, 28), "ALGERIA"
-                                                                                   "ARGENTINA"
-                                                                                   "BRAZIL"
-                                                                                   "CANADA")));
+          "N_NAME"_("DictionaryEncodedList"_("List"_(0, 7, 16, 22, 28), "ALGERIA"
+                                                                        "ARGENTINA"
+                                                                        "BRAZIL"
+                                                                        "CANADA")));
 
   auto noRewriteStrings = engine.evaluate("Select"_(
       "Project"_("NATION"_, "As"_("N_NAME"_, "N_NAME"_)), "StringContainsQ"_("N_NAME"_, "BRAZIL")));
@@ -119,14 +128,14 @@ TEST_CASE("Test column type specification", "[columnTypes]") {
 
   auto nationKeyColumn = boss::get<boss::ComplexExpression>(result).getArguments()[0];
   REQUIRE(boss::get<boss::ComplexExpression>(nationKeyColumn) ==
-          "Column"_("N_NATIONKEY"_,
+          "N_NATIONKEY"_(
                     (nationKeyType == "BIGINT"_
                          ? boss::ComplexExpression("List"_(1LL, 2LL, 3LL, 4LL)) // NOLINT
                          : boss::ComplexExpression("List"_(1, 2, 3, 4)))));     // NOLINT
 
   auto regionKeyColumn = boss::get<boss::ComplexExpression>(result).getArguments()[2];
   REQUIRE(boss::get<boss::ComplexExpression>(regionKeyColumn) ==
-          "Column"_("N_REGIONKEY"_,
+          "N_REGIONKEY"_(
                     (regionKeyType == "BIGINT"_
                          ? boss::ComplexExpression("List"_(0LL, 1LL, 1LL, 1LL))     // NOLINT
                          : boss::ComplexExpression("List"_(0.0, 1.0, 1.0, 1.0))))); // NOLINT
@@ -162,10 +171,10 @@ TEST_CASE("Test PKs and FKs", "[constraints]") {
 
   auto emptyResult = engine.evaluate("SUPPLIER"_);
   REQUIRE(emptyResult ==
-          "Table"_("Column"_("S_SUPPKEY"_, "List"_()), "Column"_("S_NAME"_, "List"_()),
-                   "Column"_("S_ADDRESS"_, "List"_()), "Column"_("S_NATIONKEY"_, "List"_()),
-                   "Column"_("S_PHONE"_, "List"_()), "Column"_("S_ACCTBAL"_, "List"_()),
-                   "Column"_("S_COMMENT"_, "List"_()), "Index"_("N_NATIONKEY"_, "List"_())));
+          "Table"_("S_SUPPKEY"_("List"_()), "S_NAME"_("List"_()),
+                   "S_ADDRESS"_("List"_()), "S_NATIONKEY"_("List"_()),
+                   "S_PHONE"_("List"_()), "S_ACCTBAL"_("List"_()),
+                   "S_COMMENT"_("List"_()), "Index"_("N_NATIONKEY"_, "List"_())));
 
   auto loadNationResult = engine.evaluate("Load"_("NATION"_, "../Tests/nation.tbl"));
   REQUIRE(loadNationResult == boss::Expression(true));

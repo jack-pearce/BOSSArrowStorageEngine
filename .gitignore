@@ -8,3 +8,4 @@ MinSizeRel/
 RelWithDebInfo/
 .idea/
 cmake-build-*/
+*cached

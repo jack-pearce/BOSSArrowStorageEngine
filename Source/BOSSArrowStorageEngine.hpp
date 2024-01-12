@@ -48,6 +48,8 @@ private:
   void load(Symbol const& tableSymbol, std::string const& filepath,
             unsigned long long maxRows = -1);
 
+  void loadDataTable(Symbol const& tableSymbol, boss::ComplexExpression&& dataTable);
+
   std::shared_ptr<arrow::RecordBatchReader>
   loadFromCsvFile(std::string const& filepath, std::vector<std::string> const& columnNames,
                   ColumnTypes const& columnTypes) const;
